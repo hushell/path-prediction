@@ -14,32 +14,33 @@ logger = logging.getLogger(__name__)
 
 def data_loader(args, split='train', agent_label='Biker'):
     dset = StanfordDroneDataset(split, agent_label,
-            obs_len=args.obs_len, pred_len=args.pred_len, skip=args.skip)
+                                obs_len=args.obs_len,
+                                pred_len=args.pred_len,
+                                step=args.step)
 
-    loader = DataLoader(
-            dset,
-            batch_size=args.batch_size,
-            shuffle=True,
-            num_workers=args.loader_num_workers)
-            #collate_fn=seq_collate)
+    loader = DataLoader(dset,
+                        batch_size=args.batch_size,
+                        shuffle=True,
+                        num_workers=args.loader_num_workers)
+                        #collate_fn=seq_collate)
     return dset, loader
 
 
 class StanfordDroneDataset(Dataset):
-    def __init__(self, split, agent_label, obs_len=20, pred_len=20, skip=10):
+    def __init__(self, split, agent_label, obs_len=20, pred_len=20, step=10):
         """
         Data format: <track_id> <x> <y> <frame_id> <msk> <agent_label>
         Inputs:
         - split: train or val
         - obs_len: Number of time-steps in input trajectories
         - pred_len: Number of time-steps in output trajectories
-        - skip: Number of frames to skip while making the dataset
+        - step: Number of frames to skip while making the dataset
         """
         super(StanfordDroneDataset, self).__init__()
 
         self.obs_len = obs_len
         self.pred_len = pred_len
-        self.skip = skip
+        self.step = step
         self.seq_len = self.obs_len + self.pred_len
 
         # read annotation.txt
@@ -54,17 +55,17 @@ class StanfordDroneDataset(Dataset):
         else:
             raise ValueError('No such split!')
 
-        self.seq_list = [] # list, each seq is 2 x len
-        self.seq_list_rel = [] # list, relative movement to previous location
-        self.loss_mask_list = [] # list
+        self.seq_list = [] # list, each seq is seq_len x 2
+        self.seq_list_rel = [] # same as seq_list, relative movement to previous location
+        self.loss_mask_list = [] # list, each is seq_len x 1
 
         for id in track_ids:
             lines_of_id = [line for line in data if line[0] == id]
-            num_seqs_of_id = int(math.ceil((len(lines_of_id) - self.seq_len + 1) / skip))
 
-            # process each sequence
-            for t in range(0, num_seqs_of_id * skip + 1, skip):
+            # process each sequence (sample seq with gap ``step'')
+            for t in range(0, len(lines_of_id) - self.seq_len + 1, step):
                 lines_for_seq = lines_of_id[t:t + self.seq_len]
+                assert(len(lines_for_seq) == self.seq_len)
                 seq = np.vstack([line[1:3] for line in lines_for_seq]) # seq_len x 2
                 self.seq_list.append(seq)
                 rel_seq = np.zeros(seq.shape)
@@ -148,12 +149,13 @@ def poly_fit(traj, traj_len, threshold):
         return 0.0
 
 
-def plot_seq(img, seq_ped, color, thickness=3, line_type=4):
+def plot_seq(img, seq_ped, color, thickness=15, line_type=8):
     '''
     Input:
     - img: reference image
-    - seq_ped: np/torch array of shape (traj_len, 2)
+    - seq_ped: np array of shape (traj_len, 2)
     '''
+    seq_ped = seq_ped.astype(int)
     for start, end in zip(seq_ped[:-1], seq_ped[1:]):
         cv2.line(img, tuple(start), tuple(end),
-                 color, thickness, line_type)
+                 color, thickness, line_type, shift=0)
