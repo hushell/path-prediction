@@ -21,8 +21,8 @@ def data_loader(args, split='train', agent_label='Biker'):
     loader = DataLoader(dset,
                         batch_size=args.batch_size,
                         shuffle=True,
-                        num_workers=args.loader_num_workers)
-                        #collate_fn=seq_collate)
+                        num_workers=args.loader_num_workers,
+                        collate_fn=seq_collate)
     return dset, loader
 
 
@@ -66,12 +66,13 @@ class StanfordDroneDataset(Dataset):
             for t in range(0, len(lines_of_id) - self.seq_len + 1, step):
                 lines_for_seq = lines_of_id[t:t + self.seq_len]
                 assert(len(lines_for_seq) == self.seq_len)
-                seq = np.vstack([line[1:3] for line in lines_for_seq]) # seq_len x 2
-                self.seq_list.append(seq)
-                rel_seq = np.zeros(seq.shape)
+                seq = np.vstack([line[1:3] for line in lines_for_seq]).astype(np.float32)
+                self.seq_list.append(torch.from_numpy(seq))
+                rel_seq = np.zeros(seq.shape).astype(np.float32)
                 rel_seq[1:, :] = seq[1:, :] - seq[:-1, :]
-                self.seq_list_rel.append(rel_seq)
-                self.loss_mask_list.append( np.vstack([line[4] for line in lines_for_seq]) )
+                self.seq_list_rel.append(torch.from_numpy(rel_seq))
+                self.loss_mask_list.append( torch.from_numpy(
+                    np.vstack([line[4] for line in lines_for_seq])) )
 
     def __len__(self):
         return len(self.seq_list)
@@ -113,20 +114,20 @@ class StanfordDroneDataset(Dataset):
 
 
 def seq_collate(data):
-    (obs_seq, pred_seq, obs_seq_rel, pred_seq_rel,
-            obs_mask, pred_mask) = zip(*data)
+    (obs_traj, pred_traj, obs_traj_rel, pred_traj_rel,
+            obs_msk, pred_msk) = zip(*data)
 
     # Data format: batch, input_size, seq_len
     # LSTM input format: seq_len, batch, input_size
-    obs_traj = torch.cat(obs_seq, dim=0).permute(1, 0, 2)
-    pred_traj = torch.cat(pred_seq, dim=0).permute(1, 0, 2)
-    obs_traj_rel = torch.cat(obs_seq_rel, dim=0).permute(1, 0, 2)
-    pred_traj_rel = torch.cat(pred_seq_rel, dim=0).permute(1, 0, 2)
-    obs_mask = torch.cat(obs_mask, dim=0)
-    pred_mask = torch.cat(pred_mask, dim=0)
+    obs_traj = torch.stack(obs_traj, 0).permute(1, 0, 2)
+    pred_traj = torch.stack(pred_traj, 0).permute(1, 0, 2)
+    obs_traj_rel = torch.stack(obs_traj_rel, 0).permute(1, 0, 2)
+    pred_traj_rel = torch.stack(pred_traj_rel, 0).permute(1, 0, 2)
+    obs_msk = torch.stack(obs_msk, 0)
+    pred_msk = torch.stack(pred_msk, 0)
 
     out = [obs_traj, pred_traj, obs_traj_rel, pred_traj_rel,
-           obs_mask, pred_mask]
+           obs_msk, pred_msk]
 
     return tuple(out)
 

@@ -4,38 +4,27 @@ import random
 
 
 class Encoder(nn.Module):
-    """Encoder is part of both TrajectoryGenerator and
-    TrajectoryDiscriminator"""
-    def __init__(
-        self, embedding_dim=64, h_dim=64, mlp_dim=1024, num_layers=1,
-        dropout=0.0
-    ):
+    def __init__(self, embedding_dim=64, h_dim=64, num_layers=1, dropout=0):
         super(Encoder, self).__init__()
 
-        self.mlp_dim = 1024
-        self.h_dim = h_dim
         self.embedding_dim = embedding_dim
+        self.h_dim = h_dim
         self.num_layers = num_layers
 
-        self.encoder = nn.LSTM(
-            embedding_dim, h_dim, num_layers, dropout=dropout
-        )
-
-        self.spatial_embedding = nn.Linear(2, embedding_dim)
+        self.encoder = nn.LSTM(embedding_dim, h_dim, num_layers, dropout=dropout)
+        self.spatial_embedding = nn.Linear(2, embedding_dim) # TODO MLP
 
     def forward(self, obs_traj):
         """
         Inputs:
-        - obs_traj: Tensor of shape (obs_len, batch, 2)
+        - obs_traj: tensor of shape (obs_len, batch, 2)
         Output:
-        - final_h: Tensor of shape (self.num_layers, batch, self.h_dim)
+        - final_h: tensor of shape (num_layers, batch, h_dim)
         """
         # Encode observed Trajectory
         batch = obs_traj.size(1)
         obs_traj_embedding = self.spatial_embedding(obs_traj.contiguous().view(-1, 2))
-        obs_traj_embedding = obs_traj_embedding.view(
-            -1, batch, self.embedding_dim
-        )
+        obs_traj_embedding = obs_traj_embedding.view(-1, batch, self.embedding_dim)
         state_tuple = (
             torch.zeros(self.num_layers, batch, self.h_dim).to(obs_traj),
             torch.zeros(self.num_layers, batch, self.h_dim).to(obs_traj)
@@ -46,33 +35,26 @@ class Encoder(nn.Module):
 
 
 class Decoder(nn.Module):
-    """Decoder is part of TrajectoryGenerator"""
-    def __init__(
-        self, seq_len, embedding_dim=64, h_dim=128, mlp_dim=1024, num_layers=1,
-        dropout=0.0, activation='relu', batch_norm=True):
+    def __init__(self, seq_len, embedding_dim=64, h_dim=64,
+                 num_layers=1, dropout=0.0):
         super(Decoder, self).__init__()
 
         self.seq_len = seq_len
-        self.mlp_dim = mlp_dim
-        self.h_dim = h_dim
         self.embedding_dim = embedding_dim
+        self.h_dim = h_dim
 
-        self.decoder = nn.LSTM(
-            embedding_dim, h_dim, num_layers, dropout=dropout
-        )
+        self.decoder = nn.LSTM(embedding_dim, h_dim, num_layers, dropout=dropout)
 
-        self.spatial_embedding = nn.Linear(2, embedding_dim)
+        self.spatial_embedding = nn.Linear(2, embedding_dim) # TODO: MLP
         self.hidden2pos = nn.Linear(h_dim, 2)
 
-    def forward(self, last_pos, last_pos_rel, state_tuple, seq_start_end):
+    def forward(self, last_pos_rel, state_tuple):
         """
         Inputs:
-        - last_pos: Tensor of shape (batch, 2)
-        - last_pos_rel: Tensor of shape (batch, 2)
+        - last_pos_rel: tensor of shape (batch, 2)
         - state_tuple: (hh, ch) each tensor of shape (num_layers, batch, h_dim)
-        - seq_start_end: A list of tuples which delimit sequences within batch
         Output:
-        - pred_traj: tensor of shape (self.seq_len, batch, 2)
+        - pred_traj: tensor of shape (seq_len, batch, 2)
         """
         batch = last_pos_rel.size(0)
         pred_traj_fake_rel = []
@@ -82,10 +64,7 @@ class Decoder(nn.Module):
         for _ in range(self.seq_len):
             output, state_tuple = self.decoder(decoder_input, state_tuple)
             rel_pos = self.hidden2pos(output.view(-1, self.h_dim))
-
-            embedding_input = rel_pos
-
-            decoder_input = self.spatial_embedding(embedding_input)
+            decoder_input = self.spatial_embedding(rel_pos)
             decoder_input = decoder_input.view(1, batch, self.embedding_dim)
             pred_traj_fake_rel.append(rel_pos.view(batch, -1))
 
@@ -93,83 +72,58 @@ class Decoder(nn.Module):
         return pred_traj_fake_rel, state_tuple[0]
 
 
-class TrajectoryGenerator(nn.Module):
-    def __init__(
-        self, obs_len, pred_len, embedding_dim=64, encoder_h_dim=64,
-        decoder_h_dim=64, mlp_dim=1024, num_layers=1,
-        dropout=0.0, activation='relu', batch_norm=True
-    ):
-        super(TrajectoryGenerator, self).__init__()
+class TrajectoryPredictor(nn.Module):
+    def __init__(self, obs_len, pred_len,
+                 embedding_dim=64, encoder_h_dim=64, decoder_h_dim=64,
+                 num_layers=1):
+        super(TrajectoryPredictor, self).__init__()
 
         self.obs_len = obs_len
         self.pred_len = pred_len
-        self.mlp_dim = mlp_dim
+        self.embedding_dim = embedding_dim
         self.encoder_h_dim = encoder_h_dim
         self.decoder_h_dim = decoder_h_dim
-        self.embedding_dim = embedding_dim
         self.num_layers = num_layers
 
-        self.encoder = Encoder(
-            embedding_dim=embedding_dim,
-            h_dim=encoder_h_dim,
-            mlp_dim=mlp_dim,
-            num_layers=num_layers,
-            dropout=dropout
-        )
+        self.encoder = Encoder(embedding_dim=embedding_dim,
+                               h_dim=encoder_h_dim,
+                               num_layers=num_layers)
 
-        self.decoder = Decoder(
-            pred_len,
-            embedding_dim=embedding_dim,
-            h_dim=decoder_h_dim,
-            mlp_dim=mlp_dim,
-            num_layers=num_layers,
-            dropout=dropout,
-            activation=activation,
-            batch_norm=batch_norm
-        )
+        self.decoder = Decoder(pred_len, embedding_dim,
+                               decoder_h_dim, num_layers)
 
 
-    def forward(self, obs_traj, obs_traj_rel, seq_start_end, user_noise=None):
+    def forward(self, obs_traj_rel):
         """
         Inputs:
-        - obs_traj: Tensor of shape (obs_len, batch, 2)
-        - obs_traj_rel: Tensor of shape (obs_len, batch, 2)
-        - seq_start_end: A list of tuples which delimit sequences within batch.
-        - user_noise: Generally used for inference when you want to see
-        relation between different types of noise and outputs.
+        - obs_traj_rel: tensor of shape (obs_len, batch, 2)
         Output:
-        - pred_traj_rel: Tensor of shape (self.pred_len, batch, 2)
+        - pred_traj_rel: tensor of shape (pred_len, batch, 2)
         """
         batch = obs_traj_rel.size(1)
 
-        # Encode seq
+        # Encode observed seq
         final_encoder_h = self.encoder(obs_traj_rel)
-        mlp_decoder_context_input = final_encoder_h.view(
-            -1, self.encoder_h_dim)
+        final_encoder_h = final_encoder_h.view(-1, self.encoder_h_dim)
 
-        decoder_h = mlp_decoder_context_input
+        decoder_h = final_encoder_h # TODO: MLP
         decoder_h = torch.unsqueeze(decoder_h, 0)
-        decoder_c = torch.zeros(
-            self.num_layers, batch, self.decoder_h_dim
-        ).to(final_encoder_h)
-
+        decoder_c = torch.zeros(self.num_layers, batch,
+                                self.decoder_h_dim).to(decoder_h)
         state_tuple = (decoder_h, decoder_c)
-        last_pos = obs_traj[-1]
-        last_pos_rel = obs_traj_rel[-1]
 
-        # Predict Trajectory
-        decoder_out = self.decoder(
-            last_pos,
-            last_pos_rel,
-            state_tuple,
-            seq_start_end,
-        )
-        pred_traj_fake_rel, final_decoder_h = decoder_out
+        # Predict trajectory
+        last_pos_rel = obs_traj_rel[-1] # batch x 2
+        pred_traj_fake_rel, final_decoder_h = self.decoder(last_pos_rel, state_tuple)
 
         return pred_traj_fake_rel
 
 
 def make_mlp(dim_list, activation='relu', batch_norm=True, dropout=0):
+    """
+    Inputs:
+    - dim_list: in the form of [input_dim, h_dim, ..., output_dim]
+    """
     layers = []
     for dim_in, dim_out in zip(dim_list[:-1], dim_list[1:]):
         layers.append(nn.Linear(dim_in, dim_out))
@@ -187,10 +141,10 @@ def make_mlp(dim_list, activation='relu', batch_norm=True, dropout=0):
 def relative_to_abs(rel_traj, start_pos):
     """
     Inputs:
-    - rel_traj: pytorch tensor of shape (seq_len, batch, 2)
-    - start_pos: pytorch tensor of shape (batch, 2)
+    - rel_traj: tensor of shape (seq_len, batch, 2)
+    - start_pos: tensor of shape (batch, 2)
     Outputs:
-    - abs_traj: pytorch tensor of shape (seq_len, batch, 2)
+    - abs_traj: tensor of shape (seq_len, batch, 2)
     """
     # batch, seq_len, 2
     rel_traj = rel_traj.permute(1, 0, 2)
@@ -203,17 +157,17 @@ def relative_to_abs(rel_traj, start_pos):
 def l2_loss(pred_traj, pred_traj_gt, loss_mask, random=0, mode='average'):
     """
     Input:
-    - pred_traj: Tensor of shape (seq_len, batch, 2). Predicted trajectory.
-    - pred_traj_gt: Tensor of shape (seq_len, batch, 2). Groud truth
+    - pred_traj: tensor of shape (seq_len, batch, 2). Predicted trajectory.
+    - pred_traj_gt: tensor of shape (seq_len, batch, 2). Groud truth
     predictions.
-    - loss_mask: Tensor of shape (batch, seq_len)
-    - mode: Can be one of sum, average, raw
+    - loss_mask: tensor of shape (batch, seq_len, 1)
+    - mode: sum, average or raw
     Output:
     - loss: l2 loss depending on mode
     """
     seq_len, batch, _ = pred_traj.size()
-    loss = (loss_mask.unsqueeze(dim=2) *
-            (pred_traj_gt.permute(1, 0, 2) - pred_traj.permute(1, 0, 2))**2)
+    loss = (loss_mask.float() * (pred_traj_gt.permute(1, 0, 2)
+                                 - pred_traj.permute(1, 0, 2))**2)
     if mode == 'sum':
         return torch.sum(loss)
     elif mode == 'average':
@@ -267,3 +221,19 @@ def final_displacement_error(
         return loss
     else:
         return torch.sum(loss)
+
+
+def init_weights(m):
+    classname = m.__class__.__name__
+    if classname.find('Linear') != -1:
+        nn.init.kaiming_normal_(m.weight)
+
+
+def get_dtypes(args):
+    long_dtype = torch.LongTensor
+    float_dtype = torch.FloatTensor
+    if args.use_gpu:
+        long_dtype = torch.cuda.LongTensor
+        float_dtype = torch.cuda.FloatTensor
+    return long_dtype, float_dtype
+
