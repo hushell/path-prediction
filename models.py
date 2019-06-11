@@ -50,7 +50,7 @@ class Decoder(nn.Module):
         self.spatial_embedding = MLP([2, 2*8, embedding_dim])
         self.hidden2pos = MLP([h_dim, 2*8, 2])
 
-    def forward(self, last_pos_rel, state_tuple, is_abs=True):
+    def forward(self, last_pos_rel, state_tuple):
         """
         Inputs:
         - last_pos_rel: tensor of shape (batch, 2)
@@ -66,8 +66,6 @@ class Decoder(nn.Module):
         for _ in range(self.seq_len):
             output, state_tuple = self.lstm(decoder_input, state_tuple)
             rel_pos = self.hidden2pos(output.view(-1, self.h_dim))
-            if is_abs:
-                rel_pos = F.relu(rel_pos)
             decoder_input = self.spatial_embedding(rel_pos)
             decoder_input = decoder_input.view(1, batch, self.embedding_dim)
             pred_traj_fake_rel.append(rel_pos.view(batch, -1))
