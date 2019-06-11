@@ -11,8 +11,9 @@ class Encoder(nn.Module):
         self.h_dim = h_dim
         self.num_layers = num_layers
 
-        self.encoder = nn.LSTM(embedding_dim, h_dim, num_layers, dropout=dropout)
-        self.spatial_embedding = nn.Linear(2, embedding_dim) # TODO MLP
+        self.lstm = nn.LSTM(embedding_dim, h_dim, num_layers, dropout=dropout)
+        #self.spatial_embedding = nn.Linear(2, embedding_dim)
+        self.spatial_embedding = MLP([2, 2*8, embedding_dim])
 
     def forward(self, obs_traj):
         """
@@ -23,13 +24,14 @@ class Encoder(nn.Module):
         """
         # Encode observed Trajectory
         batch = obs_traj.size(1)
-        obs_traj_embedding = self.spatial_embedding(obs_traj.contiguous().view(-1, 2))
+        #obs_traj_embedding = self.spatial_embedding(obs_traj.contiguous().view(-1, 2))
+        obs_traj_embedding = self.spatial_embedding(obs_traj)
         obs_traj_embedding = obs_traj_embedding.view(-1, batch, self.embedding_dim)
         state_tuple = (
             torch.zeros(self.num_layers, batch, self.h_dim).to(obs_traj),
             torch.zeros(self.num_layers, batch, self.h_dim).to(obs_traj)
         )
-        output, state = self.encoder(obs_traj_embedding, state_tuple)
+        output, state = self.lstm(obs_traj_embedding, state_tuple)
         final_h = state[0]
         return final_h
 
@@ -43,10 +45,12 @@ class Decoder(nn.Module):
         self.embedding_dim = embedding_dim
         self.h_dim = h_dim
 
-        self.decoder = nn.LSTM(embedding_dim, h_dim, num_layers, dropout=dropout)
+        self.lstm = nn.LSTM(embedding_dim, h_dim, num_layers, dropout=dropout)
 
-        self.spatial_embedding = nn.Linear(2, embedding_dim) # TODO: MLP
-        self.hidden2pos = nn.Linear(h_dim, 2)
+        #self.spatial_embedding = nn.Linear(2, embedding_dim)
+        self.spatial_embedding = MLP([2, 2*8, embedding_dim])
+        #self.hidden2pos = nn.Linear(h_dim, 2)
+        self.hidden2pos = MLP([h_dim, 2*8, 2])
 
     def forward(self, last_pos_rel, state_tuple):
         """
@@ -62,7 +66,7 @@ class Decoder(nn.Module):
         decoder_input = decoder_input.view(1, batch, self.embedding_dim)
 
         for _ in range(self.seq_len):
-            output, state_tuple = self.decoder(decoder_input, state_tuple)
+            output, state_tuple = self.lstm(decoder_input, state_tuple)
             rel_pos = self.hidden2pos(output.view(-1, self.h_dim))
             decoder_input = self.spatial_embedding(rel_pos)
             decoder_input = decoder_input.view(1, batch, self.embedding_dim)
@@ -92,6 +96,7 @@ class TrajectoryPredictor(nn.Module):
         self.decoder = Decoder(pred_len, embedding_dim,
                                decoder_h_dim, num_layers)
 
+        self.transformer = MLP([encoder_h_dim, decoder_h_dim])
 
     def forward(self, obs_traj_rel):
         """
@@ -104,9 +109,10 @@ class TrajectoryPredictor(nn.Module):
 
         # Encode observed seq
         final_encoder_h = self.encoder(obs_traj_rel)
-        final_encoder_h = final_encoder_h.view(-1, self.encoder_h_dim)
+        #final_encoder_h = final_encoder_h.view(-1, self.encoder_h_dim)
+        #decoder_h = final_encoder_h # TODO: MLP
 
-        decoder_h = final_encoder_h # TODO: MLP
+        decoder_h = self.transformer(final_encoder_h)
         decoder_h = torch.unsqueeze(decoder_h, 0)
         decoder_c = torch.zeros(self.num_layers, batch,
                                 self.decoder_h_dim).to(decoder_h)
@@ -118,24 +124,29 @@ class TrajectoryPredictor(nn.Module):
 
         return pred_traj_fake_rel
 
+    def grad_clipping(self, max_norm=0.25):
+        nn.utils.clip_grad_norm_(self.encoder.lstm.parameters(), max_norm)
+        nn.utils.clip_grad_norm_(self.decoder.lstm.parameters(), max_norm)
 
-def make_mlp(dim_list, activation='relu', batch_norm=True, dropout=0):
-    """
-    Inputs:
-    - dim_list: in the form of [input_dim, h_dim, ..., output_dim]
-    """
-    layers = []
-    for dim_in, dim_out in zip(dim_list[:-1], dim_list[1:]):
-        layers.append(nn.Linear(dim_in, dim_out))
-        if batch_norm:
-            layers.append(nn.BatchNorm1d(dim_out))
-        if activation == 'relu':
-            layers.append(nn.ReLU())
-        elif activation == 'leakyrelu':
-            layers.append(nn.LeakyReLU())
-        if dropout > 0:
-            layers.append(nn.Dropout(p=dropout))
-    return nn.Sequential(*layers)
+
+class MLP(nn.Module):
+    def __init__(self, sizes):
+        super(MLP, self).__init__()
+        depth = len(sizes)-1
+
+        self.layers = nn.ModuleList([nn.Linear(sizes[0], sizes[1])])
+        for i in range(1, depth):
+            self.layers.extend([
+                nn.BatchNorm1d(sizes[i]),
+                nn.ReLU(inplace=True),
+                nn.Linear(sizes[i], sizes[i+1])])
+
+    def forward(self, input):
+        out = input.contiguous().view(-1, input.size(-1))
+        for layer in self.layers:
+            out = layer(out)
+
+        return out
 
 
 def relative_to_abs(rel_traj, start_pos):

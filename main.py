@@ -40,12 +40,12 @@ parser.add_argument('--decoder_h_dim', default=64, type=int)
 parser.add_argument('--batch_size', default=64, type=int)
 parser.add_argument('--num_iterations', default=10000, type=int)
 parser.add_argument('--num_epochs', default=200, type=int)
-parser.add_argument('--learning_rate', default=1e-4, type=float)
-parser.add_argument('--grad_clipping', default=0.25, type=float)
+parser.add_argument('--learning_rate', default=1e-3, type=float)
+parser.add_argument('--grad_max_norm', default=0.25, type=float)
 
 # Output
 parser.add_argument('--output_dir', default=os.getcwd())
-parser.add_argument('--print_every', default=20, type=int)
+parser.add_argument('--print_every', default=30, type=int)
 parser.add_argument('--checkpoint_every', default=100, type=int)
 parser.add_argument('--checkpoint_name', default='checkpoint')
 parser.add_argument('--checkpoint_start_from', default=None)
@@ -54,15 +54,15 @@ parser.add_argument('--num_samples_check', default=5000, type=int)
 
 # Misc
 parser.add_argument('--use_gpu', action='store_true')
-parser.add_argument('--timing', default=0, type=int)
-parser.add_argument('--gpu_num', default="0", type=str)
+parser.add_argument('--gpu_id', default="0", type=str)
 
 
 #########################################################################
 # main loop
 def main(args):
     long_dtype, float_dtype = get_dtypes(args)
-    os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu_num
+    os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu_id
+    device = torch.device('cuda:0') if args.use_gpu else torch.device('cpu')
 
     # Data loaders
     logger.info("Initializing train dataset")
@@ -82,7 +82,7 @@ def main(args):
                                     embedding_dim=args.embedding_dim,
                                     encoder_h_dim=args.encoder_h_dim,
                                     decoder_h_dim=args.decoder_h_dim,
-                                    num_layers=args.num_layers)
+                                    num_layers=args.num_layers).to(device)
 
     predictor.apply(init_weights)
     predictor.type(float_dtype).train()
@@ -157,12 +157,13 @@ def main(args):
 def train_step(args, batch, model, optimizer):
     """
     Outputs:
-    - losses['l2_loss_rel']
+    - losses
     """
+    model.train()
     losses = {}
 
     if args.use_gpu:
-        batch = [tensor.cuda() for tensor in batch]
+        batch = [tensor.to(device) for tensor in batch]
     (obs_traj, pred_traj_gt, obs_traj_rel, pred_traj_gt_rel,
             obs_msk, pred_msk) = batch
 
@@ -177,7 +178,7 @@ def train_step(args, batch, model, optimizer):
 
     optimizer.zero_grad()
     loss.backward()
-    #nn.utils.clip_grad_norm_(model.parameters(), args.grad_clipping)
+    model.grad_clipping(args.grad_max_norm)
     optimizer.step()
 
     return losses
@@ -197,7 +198,7 @@ def check_accuracy(args, loader, predictor, limit=False):
     with torch.no_grad():
         for batch in loader:
             if args.use_gpu:
-                batch = [tensor.cuda() for tensor in batch]
+                batch = [tensor.to(device) for tensor in batch]
             (obs_traj, pred_traj_gt, obs_traj_rel, pred_traj_gt_rel,
                     obs_msk, pred_msk) = batch
 
