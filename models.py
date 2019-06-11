@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import random
 
 
@@ -12,7 +13,6 @@ class Encoder(nn.Module):
         self.num_layers = num_layers
 
         self.lstm = nn.LSTM(embedding_dim, h_dim, num_layers, dropout=dropout)
-        #self.spatial_embedding = nn.Linear(2, embedding_dim)
         self.spatial_embedding = MLP([2, 2*8, embedding_dim])
 
     def forward(self, obs_traj):
@@ -47,12 +47,10 @@ class Decoder(nn.Module):
 
         self.lstm = nn.LSTM(embedding_dim, h_dim, num_layers, dropout=dropout)
 
-        #self.spatial_embedding = nn.Linear(2, embedding_dim)
         self.spatial_embedding = MLP([2, 2*8, embedding_dim])
-        #self.hidden2pos = nn.Linear(h_dim, 2)
         self.hidden2pos = MLP([h_dim, 2*8, 2])
 
-    def forward(self, last_pos_rel, state_tuple):
+    def forward(self, last_pos_rel, state_tuple, is_abs=True):
         """
         Inputs:
         - last_pos_rel: tensor of shape (batch, 2)
@@ -68,6 +66,8 @@ class Decoder(nn.Module):
         for _ in range(self.seq_len):
             output, state_tuple = self.lstm(decoder_input, state_tuple)
             rel_pos = self.hidden2pos(output.view(-1, self.h_dim))
+            if is_abs:
+                rel_pos = F.relu(rel_pos)
             decoder_input = self.spatial_embedding(rel_pos)
             decoder_input = decoder_input.view(1, batch, self.embedding_dim)
             pred_traj_fake_rel.append(rel_pos.view(batch, -1))
@@ -105,13 +105,11 @@ class TrajectoryPredictor(nn.Module):
         Output:
         - pred_traj_rel: tensor of shape (pred_len, batch, 2)
         """
-        # TODO: 1. ReLU hidden2pos; 2. rel_pos
+        # TODO: 2. rel_pos (doesn't make sense if can memorize loc)
         batch = obs_traj_rel.size(1)
 
         # Encode observed seq
         final_encoder_h = self.encoder(obs_traj_rel)
-        #final_encoder_h = final_encoder_h.view(-1, self.encoder_h_dim)
-        #decoder_h = final_encoder_h # TODO: MLP
 
         decoder_h = self.transformer(final_encoder_h)
         decoder_h = torch.unsqueeze(decoder_h, 0)
