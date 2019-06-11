@@ -172,8 +172,8 @@ def train_step(args, batch, model, optimizer):
     #loss = l2_loss(pred_traj_fake_rel, pred_traj_gt_rel,
     #               pred_msk, mode='average')
     #losses['l2_loss_rel'] = loss.item()
-    loss = displacement_error(pred_traj_fake, pred_traj_gt)
-    losses['ade'] = loss.item()
+    loss = displacement_error(pred_traj_fake, pred_traj_gt, mode='average')
+    losses['ADE mean-over-batch'] = loss.item()
 
     optimizer.zero_grad()
     loss.backward()
@@ -189,8 +189,8 @@ def check_accuracy(args, loader, predictor, limit=False):
     predictor.eval()
 
     metrics = {}
-    l2_losses_abs, l2_losses_rel = ([],) * 2
-    disp_error, f_disp_error = ([],) * 2
+    l2_losses_abs, l2_losses_rel = [], []
+    disp_error, f_disp_error = [], []
     total_traj = 0
     loss_mask_sum = 0
 
