@@ -39,7 +39,7 @@ parser.add_argument('--decoder_h_dim', default=64, type=int)
 # Optimization
 parser.add_argument('--batch_size', default=64, type=int)
 parser.add_argument('--num_iterations', default=10000, type=int)
-parser.add_argument('--num_epochs', default=200, type=int)
+parser.add_argument('--num_epochs', default=40, type=int)
 parser.add_argument('--learning_rate', default=1e-3, type=float)
 parser.add_argument('--grad_max_norm', default=0.25, type=float)
 
@@ -167,8 +167,9 @@ def train_step(args, batch, model, optimizer):
     (obs_traj, pred_traj_gt, obs_traj_rel, pred_traj_gt_rel,
             obs_msk, pred_msk) = batch
 
-    pred_traj_fake_rel = model(obs_traj_rel)
-    pred_traj_fake = relative_to_abs(pred_traj_fake_rel, obs_traj[-1])
+    #pred_traj_fake_rel = model(obs_traj_rel)
+    #pred_traj_fake = relative_to_abs(pred_traj_fake_rel, obs_traj[-1])
+    pred_traj_fake = model(obs_traj)
 
     #loss = l2_loss(pred_traj_fake_rel, pred_traj_gt_rel,
     #               pred_msk, mode='average')
@@ -202,8 +203,9 @@ def check_accuracy(args, loader, predictor, limit=False):
             (obs_traj, pred_traj_gt, obs_traj_rel, pred_traj_gt_rel,
                     obs_msk, pred_msk) = batch
 
-            pred_traj_fake_rel = predictor(obs_traj_rel)
-            pred_traj_fake = relative_to_abs(pred_traj_fake_rel, obs_traj[-1])
+            #pred_traj_fake_rel = predictor(obs_traj_rel)
+            #pred_traj_fake = relative_to_abs(pred_traj_fake_rel, obs_traj[-1])
+            pred_traj_fake = predictor(obs_traj)
 
             #l2_loss_abs, l2_loss_rel = cal_l2_losses(
             #        pred_traj_gt, pred_traj_gt_rel,
@@ -226,8 +228,8 @@ def check_accuracy(args, loader, predictor, limit=False):
     # DEBUG
     for ii in range(5):
         print('==> [gt rel x=%.4f y=%.4f] [pred rel x=%.4f y=%.4f]' % (
-            pred_traj_gt_rel[-1,ii,0].item(), pred_traj_gt_rel[-1,ii,1].item(),
-            pred_traj_fake_rel[-1,ii,0].item(), pred_traj_fake_rel[-1,ii,1].item()))
+            pred_traj_gt[-1,ii,0].item(), pred_traj_gt[-1,ii,1].item(),
+            pred_traj_fake[-1,ii,0].item(), pred_traj_fake[-1,ii,1].item()))
 
     #metrics['l2_loss_abs'] = sum(l2_losses_abs) / loss_mask_sum
     #metrics['l2_loss_rel'] = sum(l2_losses_rel) / loss_mask_sum

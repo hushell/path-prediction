@@ -105,6 +105,7 @@ class TrajectoryPredictor(nn.Module):
         Output:
         - pred_traj_rel: tensor of shape (pred_len, batch, 2)
         """
+        # TODO: 1. ReLU hidden2pos; 2. rel_pos
         batch = obs_traj_rel.size(1)
 
         # Encode observed seq
