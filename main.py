@@ -29,23 +29,23 @@ parser.add_argument('--pred_len', default=20, type=int)
 parser.add_argument('--step', default=10, type=int)
 
 # Model Options
-parser.add_argument('--embedding_dim', default=16, type=int)
+parser.add_argument('--embedding_dim', default=64, type=int)
 parser.add_argument('--num_layers', default=1, type=int)
 parser.add_argument('--batch_norm', action='store_true')
 parser.add_argument('--mlp_dim', default=1024, type=int)
-parser.add_argument('--encoder_h_dim', default=16, type=int)
-parser.add_argument('--decoder_h_dim', default=16, type=int)
+parser.add_argument('--encoder_h_dim', default=64, type=int)
+parser.add_argument('--decoder_h_dim', default=64, type=int)
 
 # Optimization
 parser.add_argument('--batch_size', default=64, type=int)
 parser.add_argument('--num_iterations', default=10000, type=int)
 parser.add_argument('--num_epochs', default=200, type=int)
-parser.add_argument('--learning_rate', default=1e-3, type=float)
+parser.add_argument('--learning_rate', default=1e-4, type=float)
 parser.add_argument('--grad_clipping', default=0.25, type=float)
 
 # Output
 parser.add_argument('--output_dir', default=os.getcwd())
-parser.add_argument('--print_every', default=5, type=int)
+parser.add_argument('--print_every', default=20, type=int)
 parser.add_argument('--checkpoint_every', default=100, type=int)
 parser.add_argument('--checkpoint_name', default='checkpoint')
 parser.add_argument('--checkpoint_start_from', default=None)
@@ -144,7 +144,7 @@ def main(args):
                     checkpoint['optim_state'] = optimizer.state_dict()
 
                     checkpoint_path = os.path.join(args.output_dir,
-                            '%s_best_at_iter%d.pt' % (args.checkpoint_name, t))
+                            '%s_best.pt' % (args.checkpoint_name))
                     logger.info('Saving checkpoint to {}'.format(checkpoint_path))
                     torch.save(checkpoint, checkpoint_path)
                     logger.info('Done.')
@@ -167,15 +167,17 @@ def train_step(args, batch, model, optimizer):
             obs_msk, pred_msk) = batch
 
     pred_traj_fake_rel = model(obs_traj_rel)
-    #pred_traj_fake = relative_to_abs(pred_traj_fake_rel, obs_traj[-1])
+    pred_traj_fake = relative_to_abs(pred_traj_fake_rel, obs_traj[-1])
 
-    loss = l2_loss(pred_traj_fake_rel, pred_traj_gt_rel,
-                   pred_msk, mode='average')
-    losses['l2_loss_rel'] = loss.item()
+    #loss = l2_loss(pred_traj_fake_rel, pred_traj_gt_rel,
+    #               pred_msk, mode='average')
+    #losses['l2_loss_rel'] = loss.item()
+    loss = displacement_error(pred_traj_fake, pred_traj_gt)
+    losses['ade'] = loss.item()
 
     optimizer.zero_grad()
     loss.backward()
-    nn.utils.clip_grad_norm_(model.parameters(), args.grad_clipping)
+    #nn.utils.clip_grad_norm_(model.parameters(), args.grad_clipping)
     optimizer.step()
 
     return losses
@@ -202,15 +204,15 @@ def check_accuracy(args, loader, predictor, limit=False):
             pred_traj_fake_rel = predictor(obs_traj_rel)
             pred_traj_fake = relative_to_abs(pred_traj_fake_rel, obs_traj[-1])
 
-            l2_loss_abs, l2_loss_rel = cal_l2_losses(
-                    pred_traj_gt, pred_traj_gt_rel,
-                    pred_traj_fake, pred_traj_fake_rel, pred_msk)
+            #l2_loss_abs, l2_loss_rel = cal_l2_losses(
+            #        pred_traj_gt, pred_traj_gt_rel,
+            #        pred_traj_fake, pred_traj_fake_rel, pred_msk)
 
             ade = displacement_error(pred_traj_fake, pred_traj_gt)
             fde = final_displacement_error(pred_traj_fake[-1], pred_traj_gt[-1])
 
-            l2_losses_abs.append(l2_loss_abs.item())
-            l2_losses_rel.append(l2_loss_rel.item())
+            #l2_losses_abs.append(l2_loss_abs.item())
+            #l2_losses_rel.append(l2_loss_rel.item())
             disp_error.append(ade.item())
             f_disp_error.append(fde.item())
 
@@ -220,8 +222,14 @@ def check_accuracy(args, loader, predictor, limit=False):
             if limit and total_traj >= args.num_samples_check:
                 break
 
-    metrics['l2_loss_abs'] = sum(l2_losses_abs) / loss_mask_sum
-    metrics['l2_loss_rel'] = sum(l2_losses_rel) / loss_mask_sum
+    # DEBUG
+    for ii in range(5):
+        print('==> [gt rel x=%.4f y=%.4f] [pred rel x=%.4f y=%.4f]' % (
+            pred_traj_gt_rel[-1,ii,0].item(), pred_traj_gt_rel[-1,ii,1].item(),
+            pred_traj_fake_rel[-1,ii,0].item(), pred_traj_fake_rel[-1,ii,1].item()))
+
+    #metrics['l2_loss_abs'] = sum(l2_losses_abs) / loss_mask_sum
+    #metrics['l2_loss_rel'] = sum(l2_losses_rel) / loss_mask_sum
 
     metrics['ade'] = sum(disp_error) / (total_traj * args.pred_len)
     metrics['fde'] = sum(f_disp_error) / total_traj
