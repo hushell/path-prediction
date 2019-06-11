@@ -27,7 +27,8 @@ def data_loader(args, split='train', agent_label='Biker'):
 
 
 class StanfordDroneDataset(Dataset):
-    def __init__(self, split, agent_label, obs_len=20, pred_len=20, step=10):
+    def __init__(self, split, agent_label, obs_len=20, pred_len=20,
+                 step=10, x_max=1630.0, y_max=1948.0):
         """
         Data format: <track_id> <x> <y> <frame_id> <msk> <agent_label>
         Inputs:
@@ -42,6 +43,7 @@ class StanfordDroneDataset(Dataset):
         self.pred_len = pred_len
         self.step = step
         self.seq_len = self.obs_len + self.pred_len
+        self.xy_max = np.array([x_max, y_max])
 
         # read annotation.txt
         data = self.read_file(agent_label)
@@ -66,7 +68,8 @@ class StanfordDroneDataset(Dataset):
             for t in range(0, len(lines_of_id) - self.seq_len + 1, step):
                 lines_for_seq = lines_of_id[t:t + self.seq_len]
                 assert(len(lines_for_seq) == self.seq_len)
-                seq = np.vstack([line[1:3] for line in lines_for_seq]).astype(np.float32)
+                seq = np.vstack([line[1:3] for line in lines_for_seq]) / self.xy_max
+                seq = seq.astype(np.float32)
                 self.seq_list.append(torch.from_numpy(seq))
                 rel_seq = np.zeros(seq.shape).astype(np.float32)
                 rel_seq[1:, :] = seq[1:, :] - seq[:-1, :]
