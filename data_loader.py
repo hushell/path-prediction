@@ -22,6 +22,7 @@ def data_loader(args, split='train', agent_label='Biker'):
                         batch_size=args.batch_size,
                         shuffle=True,
                         num_workers=args.loader_num_workers,
+                        drop_last=True,
                         collate_fn=seq_collate)
     return dset, loader
 

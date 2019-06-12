@@ -1,9 +1,11 @@
 import argparse
 import logging
 import os
+import json
 import sys
 import time
 from collections import defaultdict
+from tqdm import tqdm
 
 import torch
 import torch.nn as nn
@@ -17,11 +19,13 @@ from models import *
 # config
 torch.backends.cudnn.benchmark = True
 
-parser = argparse.ArgumentParser()
-FORMAT = '[%(levelname)s: %(filename)s: %(lineno)4d]: %(message)s'
-logging.basicConfig(level=logging.INFO, format=FORMAT, stream=sys.stdout)
+FORMAT = '[%(asctime)s %(levelname)s]: %(message)s'
+logging.basicConfig(filename='print.log', filemode='w',
+                    level=logging.INFO,
+                    format=FORMAT, stream=sys.stdout)
 logger = logging.getLogger(__name__)
 
+parser = argparse.ArgumentParser()
 # Dataset options
 parser.add_argument('--loader_num_workers', default=4, type=int)
 parser.add_argument('--obs_len', default=20, type=int)
@@ -39,7 +43,7 @@ parser.add_argument('--decoder_h_dim', default=64, type=int)
 # Optimization
 parser.add_argument('--batch_size', default=64, type=int)
 parser.add_argument('--num_iterations', default=10000, type=int)
-parser.add_argument('--num_epochs', default=40, type=int)
+parser.add_argument('--num_epochs', default=50, type=int)
 parser.add_argument('--learning_rate', default=1e-3, type=float)
 parser.add_argument('--grad_max_norm', default=0.25, type=float)
 
@@ -56,25 +60,28 @@ parser.add_argument('--num_samples_check', default=5000, type=int)
 parser.add_argument('--use_gpu', action='store_true')
 parser.add_argument('--gpu_id', default="0", type=str)
 
+args = parser.parse_args()
+
+os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu_id
+
+#########################################################################
+# datasets
+logger.info("Initializing train dataset")
+train_set, train_loader = data_loader(args, 'train', 'Biker')
+iterations_per_epoch = len(train_set) / args.batch_size
+if args.num_epochs:
+    args.num_iterations = int(iterations_per_epoch * args.num_epochs)
+logger.info('There are {} iterations per epoch'.format(iterations_per_epoch))
+
+logger.info("Initializing val dataset")
+val_set, val_loader = data_loader(args, 'val', 'Biker')
+
 
 #########################################################################
 # main loop
-def main(args):
+def main(args, train_loader, val_loader):
     long_dtype, float_dtype = get_dtypes(args)
-    os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu_id
     device = torch.device('cuda:0') if args.use_gpu else torch.device('cpu')
-
-    # Data loaders
-    logger.info("Initializing train dataset")
-    train_set, train_loader = data_loader(args, 'train', 'Biker')
-    logger.info("Initializing val dataset")
-    val_set, val_loader = data_loader(args, 'val', 'Biker')
-
-    iterations_per_epoch = len(train_set) / args.batch_size
-    if args.num_epochs:
-        args.num_iterations = int(iterations_per_epoch * args.num_epochs)
-
-    logger.info('There are {} iterations per epoch'.format(iterations_per_epoch))
 
     # Model
     predictor = TrajectoryPredictor(obs_len=args.obs_len,
@@ -96,24 +103,28 @@ def main(args):
     t, epoch = 0, 0
 
     checkpoint = {
-        'args': args.__dict__,
+        'args': vars(args),
         'losses': defaultdict(list),
         'losses_ts': [],
         'metrics_val': defaultdict(list),
         'metrics_train': defaultdict(list),
+        'metrics_ts': [],
     }
 
-    while t < args.num_iterations:
+    while t < args.num_iterations: # Only do a fixed number of iterations
         epoch += 1
 
-        logger.info('Starting epoch {}'.format(epoch))
-        for batch in train_loader:
+        logger.info('=====> Starting epoch {} at iteration {}'.format(epoch, t+1))
+        tqdm_loader = tqdm(train_loader)
+        for batch in tqdm_loader:
             # train step
             losses = train_step(args, batch, predictor, optimizer)
+            tqdm_loader.set_description('Epoch %d, Iter %d / %d: losses[ade-batch] = %.4f' % (
+                epoch, t+1, args.num_iterations, losses['ade-batch']))
 
             # Maybe save loss
             if t % args.print_every == 0:
-                logger.info('t = {} / {}'.format(t + 1, args.num_iterations))
+                logger.info('t = {} / {}'.format(t+1, args.num_iterations))
                 for k, v in sorted(losses.items()):
                     logger.info('  [losses] {}: {:.3f}'.format(k, v))
                     checkpoint['losses'][k].append(v)
@@ -122,23 +133,33 @@ def main(args):
             # Maybe save a checkpoint
             if t > 0 and t % args.checkpoint_every == 0:
                 # Check stats on the validation set
-                logger.info('Checking stats on val ...')
+                logger.info('Evaluation on val ...')
                 metrics_val = check_accuracy(args, val_loader, predictor)
                 for k, v in sorted(metrics_val.items()):
                     logger.info('  [val] {}: {:.3f}'.format(k, v))
                     checkpoint['metrics_val'][k].append(v)
 
                 # Check stats on the train set
-                logger.info('Checking stats on train ...')
+                logger.info('Evaluation on train ...')
                 metrics_train = check_accuracy(args, train_loader, predictor, limit=True)
                 for k, v in sorted(metrics_train.items()):
                     logger.info('  [train] {}: {:.3f}'.format(k, v))
                     checkpoint['metrics_train'][k].append(v)
 
+                checkpoint['metrics_ts'].append(t)
+
+                # save metrics in log
+                logname = os.path.join(args.output_dir, 'log.json')
+                logger.info('Saving log to {}'.format(logname))
+                with open(logname, 'w') as f:
+                    checkpoint_sub = {k:v for k,v in checkpoint.items()
+                                      if k not in {'model_state', 'optim_state', 'best_t'}}
+                    f.write(json.dumps(checkpoint_sub) + '\n')
+
                 min_ade = min(checkpoint['metrics_val']['ade'])
 
                 if metrics_val['ade'] == min_ade:
-                    logger.info('New low for avg_disp_error')
+                    logger.info('New lower avg_disp_error = %.4f' % min_ade)
                     checkpoint['best_t'] = t
                     checkpoint['model_state'] = predictor.state_dict()
                     checkpoint['optim_state'] = optimizer.state_dict()
@@ -147,12 +168,13 @@ def main(args):
                             '%s_best.pt' % (args.checkpoint_name))
                     logger.info('Saving checkpoint to {}'.format(checkpoint_path))
                     torch.save(checkpoint, checkpoint_path)
-                    logger.info('Done.')
 
             t += 1
             if t >= args.num_iterations:
+                print('=====> Terminate training at epoch {} iteration {}'.format(epoch, t+1))
                 break
 
+    return predictor, checkpoint
 
 def train_step(args, batch, model, optimizer):
     """
@@ -175,7 +197,7 @@ def train_step(args, batch, model, optimizer):
     #               pred_msk, mode='average')
     #losses['l2_loss_rel'] = loss.item()
     loss = displacement_error(pred_traj_fake, pred_traj_gt, mode='average')
-    losses['ADE mean-over-batch'] = loss.item()
+    losses['ade-batch'] = loss.item()
 
     optimizer.zero_grad()
     loss.backward()
@@ -225,11 +247,11 @@ def check_accuracy(args, loader, predictor, limit=False):
             if limit and total_traj >= args.num_samples_check:
                 break
 
-    # DEBUG
-    for ii in range(5):
-        print('==> [gt rel x=%.4f y=%.4f] [pred rel x=%.4f y=%.4f]' % (
-            pred_traj_gt[-1,ii,0].item(), pred_traj_gt[-1,ii,1].item(),
-            pred_traj_fake[-1,ii,0].item(), pred_traj_fake[-1,ii,1].item()))
+    ## DEBUG
+    #for ii in range(5):
+    #    print('==> [gt rel x=%.4f y=%.4f] [pred rel x=%.4f y=%.4f]' % (
+    #        pred_traj_gt[-1,ii,0].item(), pred_traj_gt[-1,ii,1].item(),
+    #        pred_traj_fake[-1,ii,0].item(), pred_traj_fake[-1,ii,1].item()))
 
     #metrics['l2_loss_abs'] = sum(l2_losses_abs) / loss_mask_sum
     #metrics['l2_loss_rel'] = sum(l2_losses_rel) / loss_mask_sum
@@ -251,5 +273,4 @@ def cal_l2_losses(pred_traj_gt, pred_traj_gt_rel,
 
 
 if __name__ == '__main__':
-    args = parser.parse_args()
-    main(args)
+    main(args, train_loader, val_loader)
