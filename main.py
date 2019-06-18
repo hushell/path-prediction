@@ -35,10 +35,10 @@ parser.add_argument('--step', default=10, type=int)
 # Model Options
 parser.add_argument('--embedding_dim', default=64, type=int)
 parser.add_argument('--num_layers', default=1, type=int)
-parser.add_argument('--batch_norm', action='store_true')
-parser.add_argument('--mlp_dim', default=1024, type=int)
 parser.add_argument('--encoder_h_dim', default=64, type=int)
 parser.add_argument('--decoder_h_dim', default=64, type=int)
+parser.add_argument('--x_max', default=1630, type=int)
+parser.add_argument('--y_max', default=1948, type=int)
 
 # Optimization
 parser.add_argument('--batch_size', default=64, type=int)
@@ -84,20 +84,25 @@ def main(args, train_loader, val_loader):
     device = torch.device('cuda:0') if args.use_gpu else torch.device('cpu')
 
     # Model
-    predictor = TrajectoryPredictor(obs_len=args.obs_len,
-                                    pred_len=args.pred_len,
-                                    embedding_dim=args.embedding_dim,
-                                    encoder_h_dim=args.encoder_h_dim,
-                                    decoder_h_dim=args.decoder_h_dim,
-                                    num_layers=args.num_layers).to(device)
+    #predictor = TrajectoryPredictor(obs_len=args.obs_len,
+    #                                pred_len=args.pred_len,
+    #                                embedding_dim=args.embedding_dim,
+    #                                encoder_h_dim=args.encoder_h_dim,
+    #                                decoder_h_dim=args.decoder_h_dim,
+    #                                num_layers=args.num_layers).to(device)
+    predictor = TrajectoryLSTM(obs_len=args.obs_len,
+                               pred_len=args.pred_len,
+                               embedding_dim=args.embedding_dim,
+                               h_dim=args.encoder_h_dim,
+                               num_layers=args.num_layers).to(device)
 
-    predictor.apply(init_weights)
-    predictor.type(float_dtype).train()
+
     logger.info('Model structure:')
     logger.info(predictor)
 
     # Optimizier
     optimizer = optim.Adam(predictor.parameters(), lr=args.learning_rate)
+    scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=[10,60], gamma=0.1)
 
     # Main loop
     t, epoch = 0, 0
@@ -115,12 +120,14 @@ def main(args, train_loader, val_loader):
         epoch += 1
 
         logger.info('=====> Starting epoch {} at iteration {}'.format(epoch, t+1))
+        scheduler.step()
+        lr = scheduler.get_lr()[0]
         tqdm_loader = tqdm(train_loader)
         for batch in tqdm_loader:
             # train step
             losses = train_step(args, batch, predictor, optimizer)
-            tqdm_loader.set_description('Epoch %d, Iter %d / %d: losses[ade-batch] = %.4f' % (
-                epoch, t+1, args.num_iterations, losses['ade-batch']))
+            tqdm_loader.set_description('Epoch %d, Iter %d / %d, lr %.0e: losses[ade-batch] = %.4f' % (
+                epoch, t+1, args.num_iterations, lr, losses['ade-batch']))
 
             # Maybe save loss
             if t % args.print_every == 0:
@@ -176,12 +183,12 @@ def main(args, train_loader, val_loader):
 
     return predictor, checkpoint
 
-def train_step(args, batch, model, optimizer):
+def train_step(args, batch, predictor, optimizer):
     """
     Outputs:
     - losses
     """
-    model.train()
+    predictor.train()
     losses = {}
 
     if args.use_gpu:
@@ -189,9 +196,7 @@ def train_step(args, batch, model, optimizer):
     (obs_traj, pred_traj_gt, obs_traj_rel, pred_traj_gt_rel,
             obs_msk, pred_msk) = batch
 
-    #pred_traj_fake_rel = model(obs_traj_rel)
-    #pred_traj_fake = relative_to_abs(pred_traj_fake_rel, obs_traj[-1])
-    pred_traj_fake = model(obs_traj)
+    pred_traj_fake = predictor.forward(obs_traj, args.x_max, args.y_max)
 
     #loss = l2_loss(pred_traj_fake_rel, pred_traj_gt_rel,
     #               pred_msk, mode='average')
@@ -201,7 +206,7 @@ def train_step(args, batch, model, optimizer):
 
     optimizer.zero_grad()
     loss.backward()
-    model.grad_clipping(args.grad_max_norm)
+    predictor.grad_clipping(args.grad_max_norm)
     optimizer.step()
 
     return losses
@@ -225,9 +230,7 @@ def check_accuracy(args, loader, predictor, limit=False):
             (obs_traj, pred_traj_gt, obs_traj_rel, pred_traj_gt_rel,
                     obs_msk, pred_msk) = batch
 
-            #pred_traj_fake_rel = predictor(obs_traj_rel)
-            #pred_traj_fake = relative_to_abs(pred_traj_fake_rel, obs_traj[-1])
-            pred_traj_fake = predictor(obs_traj)
+            pred_traj_fake = predictor(obs_traj, args.x_max, args.y_max)
 
             #l2_loss_abs, l2_loss_rel = cal_l2_losses(
             #        pred_traj_gt, pred_traj_gt_rel,
@@ -247,11 +250,11 @@ def check_accuracy(args, loader, predictor, limit=False):
             if limit and total_traj >= args.num_samples_check:
                 break
 
-    ## DEBUG
-    #for ii in range(5):
-    #    print('==> [gt rel x=%.4f y=%.4f] [pred rel x=%.4f y=%.4f]' % (
-    #        pred_traj_gt[-1,ii,0].item(), pred_traj_gt[-1,ii,1].item(),
-    #        pred_traj_fake[-1,ii,0].item(), pred_traj_fake[-1,ii,1].item()))
+    # DEBUG
+    for ii in range(5):
+        print('==> [gt rel x=%.4f y=%.4f] [pred rel x=%.4f y=%.4f]' % (
+            pred_traj_gt[-1,ii,0].item(), pred_traj_gt[-1,ii,1].item(),
+            pred_traj_fake[-1,ii,0].item(), pred_traj_fake[-1,ii,1].item()))
 
     #metrics['l2_loss_abs'] = sum(l2_losses_abs) / loss_mask_sum
     #metrics['l2_loss_rel'] = sum(l2_losses_rel) / loss_mask_sum
@@ -273,4 +276,4 @@ def cal_l2_losses(pred_traj_gt, pred_traj_gt_rel,
 
 
 if __name__ == '__main__':
-    main(args, train_loader, val_loader)
+    predictor, checkpoint = main(args, train_loader, val_loader)

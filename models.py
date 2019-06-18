@@ -4,6 +4,65 @@ import torch.nn.functional as F
 import random
 
 
+class TrajectoryLSTM(nn.Module):
+    def __init__(self, obs_len, pred_len,
+                 embedding_dim=64, h_dim=64, num_layers=1, dropout=0):
+        super(TrajectoryLSTM, self).__init__()
+
+        self.obs_len = obs_len
+        self.pred_len = pred_len
+        self.embedding_dim = embedding_dim
+        self.h_dim = h_dim
+        self.num_layers = num_layers
+
+        self.lstm = nn.LSTM(embedding_dim, h_dim, num_layers, dropout=dropout)
+
+        self.spatial_embedding = MLP([2, 2*8, embedding_dim])
+        self.hidden2pos = MLP([h_dim, 2*8, 2])
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, obs_traj, x_max, y_max):
+        """
+        """
+        xy_max = torch.FloatTensor([x_max, y_max])
+        obs_traj  = obs_traj / xy_max
+
+        # Encoding
+        batch = obs_traj.size(1)
+        obs_traj_embedding = self.spatial_embedding(obs_traj)
+        obs_traj_embedding = obs_traj_embedding.view(-1, batch, self.embedding_dim)
+        state_tuple = (
+            torch.zeros(self.num_layers, batch, self.h_dim).to(obs_traj),
+            torch.zeros(self.num_layers, batch, self.h_dim).to(obs_traj)
+        )
+        obs_output, state_tuple = self.lstm(obs_traj_embedding, state_tuple)
+
+        # Decoding
+        pred_traj_fake = []
+        last_pos = obs_traj[-1] # batch x 2
+        output = obs_output[-1]
+
+        for _ in range(self.pred_len):
+            pos_rel = self.hidden2pos(output.view(-1, self.h_dim))
+            last_pos = relative_to_abs(pos_rel.view(-1, batch, 2), last_pos)
+            last_pos = self.sigmoid(last_pos)
+            last_pos = last_pos.view(batch, 2) # 1 x batch x 2 --> batch x 2
+
+            decoder_input = self.spatial_embedding(last_pos)
+            decoder_input = decoder_input.view(1, batch, self.embedding_dim)
+            pred_traj_fake.append(last_pos)
+
+            output, state_tuple = self.lstm(decoder_input, state_tuple) # decoder_input(last_pos)
+
+        pred_traj_fake = torch.stack(pred_traj_fake, dim=0)
+        pred_traj_fake = pred_traj_fake * xy_max
+
+        return pred_traj_fake
+
+    def grad_clipping(self, max_norm=0.25):
+        nn.utils.clip_grad_norm_(self.lstm.parameters(), max_norm)
+
+
 class Encoder(nn.Module):
     def __init__(self, embedding_dim=64, h_dim=64, num_layers=1, dropout=0):
         super(Encoder, self).__init__()
@@ -49,29 +108,35 @@ class Decoder(nn.Module):
 
         self.spatial_embedding = MLP([2, 2*8, embedding_dim])
         self.hidden2pos = MLP([h_dim, 2*8, 2])
+        self.sigmoid = nn.Sigmoid()
 
-    def forward(self, last_pos_rel, state_tuple):
+    def forward(self, last_pos, state_tuple):
         """
         Inputs:
-        - last_pos_rel: tensor of shape (batch, 2)
+        - last_pos: tensor of shape (batch, 2)
         - state_tuple: (hh, ch) each tensor of shape (num_layers, batch, h_dim)
         Output:
-        - pred_traj: tensor of shape (seq_len, batch, 2)
+        - pred_traj_fake: tensor of shape (seq_len, batch, 2)
         """
-        batch = last_pos_rel.size(0)
-        pred_traj_fake_rel = []
-        decoder_input = self.spatial_embedding(last_pos_rel)
+        batch = last_pos.size(0)
+        pred_traj_fake = []
+        decoder_input = self.spatial_embedding(last_pos)
         decoder_input = decoder_input.view(1, batch, self.embedding_dim)
 
         for _ in range(self.seq_len):
-            output, state_tuple = self.lstm(decoder_input, state_tuple)
-            rel_pos = self.hidden2pos(output.view(-1, self.h_dim))
-            decoder_input = self.spatial_embedding(rel_pos)
-            decoder_input = decoder_input.view(1, batch, self.embedding_dim)
-            pred_traj_fake_rel.append(rel_pos.view(batch, -1))
+            output, state_tuple = self.lstm(decoder_input, state_tuple) # decoder_input(last_pos)
 
-        pred_traj_fake_rel = torch.stack(pred_traj_fake_rel, dim=0)
-        return pred_traj_fake_rel, state_tuple[0]
+            pos_rel = self.hidden2pos(output.view(-1, self.h_dim))
+            last_pos = relative_to_abs(pos_rel.view(-1, batch, 2), last_pos)
+            last_pos = self.sigmoid(last_pos)
+            last_pos = last_pos.view(batch, 2) # 1 x batch x 2 --> batch x 2
+
+            decoder_input = self.spatial_embedding(last_pos)
+            decoder_input = decoder_input.view(1, batch, self.embedding_dim)
+            pred_traj_fake.append(last_pos)
+
+        pred_traj_fake = torch.stack(pred_traj_fake, dim=0)
+        return pred_traj_fake
 
 
 class TrajectoryPredictor(nn.Module):
@@ -96,30 +161,35 @@ class TrajectoryPredictor(nn.Module):
 
         self.transformer = MLP([encoder_h_dim, decoder_h_dim])
 
-    def forward(self, obs_traj_rel):
+        self.apply(init_weights)
+
+    def forward(self, obs_traj, x_max, y_max):
         """
         Inputs:
-        - obs_traj_rel: tensor of shape (obs_len, batch, 2)
+        - obs_traj: tensor of shape (obs_len, batch, 2)
         Output:
-        - pred_traj_rel: tensor of shape (pred_len, batch, 2)
+        - pred_traj_fake: tensor of shape (pred_len, batch, 2)
         """
-        # TODO: 2. rel_pos (doesn't make sense if can memorize loc)
-        batch = obs_traj_rel.size(1)
+        batch = obs_traj.size(1)
 
-        # Encode observed seq
-        final_encoder_h = self.encoder(obs_traj_rel)
+        xy_max = torch.FloatTensor([x_max, y_max])
+        obs_traj  = obs_traj / xy_max
 
-        decoder_h = self.transformer(final_encoder_h)
+        # Encode observed trajectory
+        final_encoder_h = self.encoder(obs_traj)
+
+        decoder_h = self.transformer(final_encoder_h) # decoder_h_dim >= encoder_h_dim
         decoder_h = torch.unsqueeze(decoder_h, 0)
         decoder_c = torch.zeros(self.num_layers, batch,
                                 self.decoder_h_dim).to(decoder_h)
         state_tuple = (decoder_h, decoder_c)
 
         # Predict trajectory
-        last_pos_rel = obs_traj_rel[-1] # batch x 2
-        pred_traj_fake_rel, final_decoder_h = self.decoder(last_pos_rel, state_tuple)
+        last_pos = obs_traj[-1] # batch x 2
+        pred_traj_fake = self.decoder(last_pos, state_tuple)
+        pred_traj_fake = pred_traj_fake * xy_max
 
-        return pred_traj_fake_rel
+        return pred_traj_fake
 
     def grad_clipping(self, max_norm=0.25):
         nn.utils.clip_grad_norm_(self.encoder.lstm.parameters(), max_norm)
@@ -239,6 +309,11 @@ def init_weights(m):
     classname = m.__class__.__name__
     if classname.find('Linear') != -1:
         nn.init.kaiming_normal_(m.weight)
+        if hasattr(m, 'bias') and m.bias is not None:
+            m.bias.data.fill_(0.0)
+    elif classname.find('BatchNorm2d') != -1:
+        m.weight.data.normal_(1.0, init_gain=0.02)
+        m.bias.data.fill_(0.0)
 
 
 def get_dtypes(args):

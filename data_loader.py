@@ -16,7 +16,9 @@ def data_loader(args, split='train', agent_label='Biker'):
     dset = StanfordDroneDataset(split, agent_label,
                                 obs_len=args.obs_len,
                                 pred_len=args.pred_len,
-                                step=args.step)
+                                step=args.step,
+                                x_max=args.x_max,
+                                y_max=args.y_max)
 
     loader = DataLoader(dset,
                         batch_size=args.batch_size,
@@ -44,7 +46,7 @@ class StanfordDroneDataset(Dataset):
         self.pred_len = pred_len
         self.step = step
         self.seq_len = self.obs_len + self.pred_len
-        self.xy_max = np.array([x_max, y_max])
+        #self.xy_max = torch.tensor([x_max, y_max])
 
         # read annotation.txt
         data = self.read_file(agent_label)
@@ -69,7 +71,7 @@ class StanfordDroneDataset(Dataset):
             for t in range(0, len(lines_of_id) - self.seq_len + 1, step):
                 lines_for_seq = lines_of_id[t:t + self.seq_len]
                 assert(len(lines_for_seq) == self.seq_len)
-                seq = np.vstack([line[1:3] for line in lines_for_seq]) / self.xy_max
+                seq = np.vstack([line[1:3] for line in lines_for_seq])
                 seq = seq.astype(np.float32)
                 self.seq_list.append(torch.from_numpy(seq))
                 rel_seq = np.zeros(seq.shape).astype(np.float32)
@@ -86,9 +88,12 @@ class StanfordDroneDataset(Dataset):
         Outputs:
         - obs_seq, pred_seq, obs_seq_rel, pred_seq_rel, obs_msk, pred_msk
         '''
-        out = [self.seq_list[index][:self.obs_len, :], self.seq_list[index][self.obs_len:, :],
-               self.seq_list_rel[index][:self.obs_len, :], self.seq_list_rel[index][self.obs_len:, :],
-               self.loss_mask_list[index][:self.obs_len, :], self.loss_mask_list[index][self.obs_len:, :]]
+        out = [self.seq_list[index][:self.obs_len, :],
+               self.seq_list[index][self.obs_len:, :],
+               self.seq_list_rel[index][:self.obs_len, :],
+               self.seq_list_rel[index][self.obs_len:, :],
+               self.loss_mask_list[index][:self.obs_len, :],
+               self.loss_mask_list[index][self.obs_len:, :]]
         return out
 
     def read_file(self, agent_label):
@@ -120,9 +125,10 @@ class StanfordDroneDataset(Dataset):
 def seq_collate(data):
     (obs_traj, pred_traj, obs_traj_rel, pred_traj_rel,
             obs_msk, pred_msk) = zip(*data)
-
-    # Data format: batch, input_size, seq_len
-    # LSTM input format: seq_len, batch, input_size
+    """
+    Data format: batch x seq_len x input_size
+    LSTM input format: seq_len x batch x input_size
+    """
     obs_traj = torch.stack(obs_traj, 0).permute(1, 0, 2)
     pred_traj = torch.stack(pred_traj, 0).permute(1, 0, 2)
     obs_traj_rel = torch.stack(obs_traj_rel, 0).permute(1, 0, 2)
