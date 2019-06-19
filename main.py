@@ -45,7 +45,7 @@ parser.add_argument('--batch_size', default=64, type=int)
 parser.add_argument('--num_iterations', default=10000, type=int)
 parser.add_argument('--num_epochs', default=50, type=int)
 parser.add_argument('--learning_rate', default=1e-3, type=float)
-parser.add_argument('--grad_max_norm', default=0.25, type=float)
+parser.add_argument('--grad_max_norm', default=1.0, type=float)
 
 # Output
 parser.add_argument('--output_dir', default=os.getcwd())
@@ -67,14 +67,14 @@ os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu_id
 #########################################################################
 # datasets
 logger.info("Initializing train dataset")
-train_set, train_loader = data_loader(args, 'train', 'Biker')
+train_set, train_loader = data_loader(args, 'train', 'Pedestrian')
 iterations_per_epoch = len(train_set) / args.batch_size
 if args.num_epochs:
     args.num_iterations = int(iterations_per_epoch * args.num_epochs)
 logger.info('There are {} iterations per epoch'.format(iterations_per_epoch))
 
 logger.info("Initializing val dataset")
-val_set, val_loader = data_loader(args, 'val', 'Biker')
+val_set, val_loader = data_loader(args, 'val', 'Pedestrian')
 
 
 #########################################################################
@@ -84,17 +84,17 @@ def main(args, train_loader, val_loader):
     device = torch.device('cuda:0') if args.use_gpu else torch.device('cpu')
 
     # Model
-    #predictor = TrajectoryPredictor(obs_len=args.obs_len,
-    #                                pred_len=args.pred_len,
-    #                                embedding_dim=args.embedding_dim,
-    #                                encoder_h_dim=args.encoder_h_dim,
-    #                                decoder_h_dim=args.decoder_h_dim,
-    #                                num_layers=args.num_layers).to(device)
-    predictor = TrajectoryLSTM(obs_len=args.obs_len,
-                               pred_len=args.pred_len,
-                               embedding_dim=args.embedding_dim,
-                               h_dim=args.encoder_h_dim,
-                               num_layers=args.num_layers).to(device)
+    predictor = TrajectoryPredictor(obs_len=args.obs_len,
+                                    pred_len=args.pred_len,
+                                    embedding_dim=args.embedding_dim,
+                                    encoder_h_dim=args.encoder_h_dim,
+                                    decoder_h_dim=args.decoder_h_dim,
+                                    num_layers=args.num_layers).to(device)
+    #predictor = TrajectoryLSTM(obs_len=args.obs_len,
+    #                           pred_len=args.pred_len,
+    #                           embedding_dim=args.embedding_dim,
+    #                           h_dim=args.encoder_h_dim,
+    #                           num_layers=args.num_layers).to(device)
 
 
     logger.info('Model structure:')
@@ -126,8 +126,8 @@ def main(args, train_loader, val_loader):
         for batch in tqdm_loader:
             # train step
             losses = train_step(args, batch, predictor, optimizer)
-            tqdm_loader.set_description('Epoch %d, Iter %d / %d, lr %.0e: losses[ade-batch] = %.4f' % (
-                epoch, t+1, args.num_iterations, lr, losses['ade-batch']))
+            tqdm_loader.set_description('Epoch {}, Iter {} / {}, lr {}: losses = {}'.format(
+                epoch, t+1, args.num_iterations, lr, losses))
 
             # Maybe save loss
             if t % args.print_every == 0:
@@ -166,7 +166,7 @@ def main(args, train_loader, val_loader):
                 min_ade = min(checkpoint['metrics_val']['ade'])
 
                 if metrics_val['ade'] == min_ade:
-                    logger.info('New lower avg_disp_error = %.4f' % min_ade)
+                    logger.info('Epoch %d: New lower avg_disp_error = %.4f' % (epoch, min_ade))
                     checkpoint['best_t'] = t
                     checkpoint['model_state'] = predictor.state_dict()
                     checkpoint['optim_state'] = optimizer.state_dict()
@@ -196,13 +196,14 @@ def train_step(args, batch, predictor, optimizer):
     (obs_traj, pred_traj_gt, obs_traj_rel, pred_traj_gt_rel,
             obs_msk, pred_msk) = batch
 
-    pred_traj_fake = predictor.forward(obs_traj, args.x_max, args.y_max)
+    pred_traj_fake, pred_traj_fake_rel = predictor.forward(obs_traj, args.x_max, args.y_max)
 
-    #loss = l2_loss(pred_traj_fake_rel, pred_traj_gt_rel,
-    #               pred_msk, mode='average')
-    #losses['l2_loss_rel'] = loss.item()
-    loss = displacement_error(pred_traj_fake, pred_traj_gt, mode='average')
-    losses['ade-batch'] = loss.item()
+    loss = l2_loss(pred_traj_fake_rel, pred_traj_gt_rel, pred_msk, mode='average')
+    losses['l2_loss_rel'] = loss.item()
+    loss = l2_loss(pred_traj_fake, pred_traj_gt, pred_msk, mode='average')
+    losses['l2_loss_abs'] = loss.item()
+    #loss = displacement_error(pred_traj_fake, pred_traj_gt, mode='average')
+    #losses['ade-batch'] = loss.item()
 
     optimizer.zero_grad()
     loss.backward()
@@ -230,7 +231,7 @@ def check_accuracy(args, loader, predictor, limit=False):
             (obs_traj, pred_traj_gt, obs_traj_rel, pred_traj_gt_rel,
                     obs_msk, pred_msk) = batch
 
-            pred_traj_fake = predictor(obs_traj, args.x_max, args.y_max)
+            pred_traj_fake, pred_traj_fake_rel = predictor(obs_traj, args.x_max, args.y_max)
 
             #l2_loss_abs, l2_loss_rel = cal_l2_losses(
             #        pred_traj_gt, pred_traj_gt_rel,
@@ -238,11 +239,13 @@ def check_accuracy(args, loader, predictor, limit=False):
 
             ade = displacement_error(pred_traj_fake, pred_traj_gt)
             fde = final_displacement_error(pred_traj_fake[-1], pred_traj_gt[-1])
+            #l2_loss_abs = l2_loss(pred_traj_fake, pred_traj_gt, pred_msk, mode='sum')
+            #l2_loss_rel = l2_loss(pred_traj_fake_rel, pred_traj_gt_rel, pred_msk, mode='sum')
 
-            #l2_losses_abs.append(l2_loss_abs.item())
-            #l2_losses_rel.append(l2_loss_rel.item())
             disp_error.append(ade.item())
             f_disp_error.append(fde.item())
+            #l2_losses_abs.append(l2_loss_abs.item())
+            #l2_losses_rel.append(l2_loss_rel.item())
 
             loss_mask_sum += torch.numel(pred_msk)
             total_traj += pred_traj_gt.size(1)
@@ -258,7 +261,6 @@ def check_accuracy(args, loader, predictor, limit=False):
 
     #metrics['l2_loss_abs'] = sum(l2_losses_abs) / loss_mask_sum
     #metrics['l2_loss_rel'] = sum(l2_losses_rel) / loss_mask_sum
-
     metrics['ade'] = sum(disp_error) / (total_traj * args.pred_len)
     metrics['fde'] = sum(f_disp_error) / total_traj
 
