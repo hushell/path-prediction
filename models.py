@@ -105,7 +105,7 @@ class TrajectoryPredictor(nn.Module):
 
         self.apply(init_weights)
 
-    def forward(self, obs_traj, x_max, y_max):
+    def forward(self, obs_traj, x_max, y_max, pred_traj=None):
         """
         Inputs:
         - obs_traj: tensor of shape (obs_len, batch, 2)
@@ -113,20 +113,23 @@ class TrajectoryPredictor(nn.Module):
         - pred_traj_fake: tensor of shape (pred_len, batch, 2)
         """
         batch = obs_traj.size(1)
+        first_pos = obs_traj[0]
+        last_pos = obs_traj[-1] # batch x 2
+        obj_traj = obj_traj - first_pos.unsqueeze(0)
 
         #xy_max = torch.FloatTensor([x_max, y_max])
         #obs_traj  = obs_traj / xy_max
         #obs_traj = obs_traj - obs_traj.mean(dim=2).unsqueeze(2)
 
+        ##############################
         # Encode observed trajectory
         obs_emb = self.spatial_embedding(obs_traj)
         obs_emb = obs_emb.view(-1, batch, self.embedding_dim)
+
         context = self.encoder(obs_emb)
 
+        ##############################
         # Decoding
-        #decoder_h = self.transformer(final_encoder_h) # decoder_h_dim >= encoder_h_dim
-        #decoder_h = torch.unsqueeze(decoder_h, 0)
-        last_pos = obs_traj[-1] # batch x 2
         pred_traj_fake, pred_traj_fake_rel = self.decoder(last_pos, context, self.spatial_embedding)
 
         #pred_traj_fake = pred_traj_fake + obs_traj.mean(dim=2).unsqueeze(2)

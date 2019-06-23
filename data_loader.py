@@ -1,5 +1,3 @@
-from torch.utils.data import DataLoader
-
 import logging
 import os
 import math
@@ -8,11 +6,13 @@ import numpy as np
 
 import torch
 from torch.utils.data import Dataset
+from torch.utils.data import DataLoader
+
 
 logger = logging.getLogger(__name__)
 
 
-def data_loader(args, split='train', agent_label='Biker'):
+def data_loader(args, split='train', agent_label='Biker', lstm_form=False):
     dset = StanfordDroneDataset(split, agent_label,
                                 obs_len=args.obs_len,
                                 pred_len=args.pred_len,
@@ -20,12 +20,20 @@ def data_loader(args, split='train', agent_label='Biker'):
                                 x_max=args.x_max,
                                 y_max=args.y_max)
 
-    loader = DataLoader(dset,
-                        batch_size=args.batch_size,
-                        shuffle=True,
-                        num_workers=args.loader_num_workers,
-                        drop_last=True,
-                        collate_fn=seq_collate)
+    if lstm_form:
+        loader = DataLoader(dset,
+                            batch_size=args.batch_size,
+                            shuffle=True,
+                            num_workers=args.loader_num_workers,
+                            drop_last=True,
+                            collate_fn=seq_collate)
+    else:
+        loader = DataLoader(dset,
+                            batch_size=args.batch_size,
+                            shuffle=True,
+                            num_workers=args.loader_num_workers,
+                            drop_last=True,
+                            collate_fn=conv_collate)
     return dset, loader
 
 
@@ -133,6 +141,26 @@ def seq_collate(data):
     pred_traj = torch.stack(pred_traj, 0).permute(1, 0, 2)
     obs_traj_rel = torch.stack(obs_traj_rel, 0).permute(1, 0, 2)
     pred_traj_rel = torch.stack(pred_traj_rel, 0).permute(1, 0, 2)
+    obs_msk = torch.stack(obs_msk, 0)
+    pred_msk = torch.stack(pred_msk, 0)
+
+    out = [obs_traj, pred_traj, obs_traj_rel, pred_traj_rel,
+           obs_msk, pred_msk]
+
+    return tuple(out)
+
+
+def conv_collate(data):
+    (obs_traj, pred_traj, obs_traj_rel, pred_traj_rel,
+            obs_msk, pred_msk) = zip(*data)
+    """
+    Data format: batch x seq_len x input_size
+    Conv1d input format: batch x input_size x seq_len
+    """
+    obs_traj = torch.stack(obs_traj, 0).permute(0, 2, 1)
+    pred_traj = torch.stack(pred_traj, 0).permute(0, 2, 1)
+    obs_traj_rel = torch.stack(obs_traj_rel, 0).permute(0, 2, 1)
+    pred_traj_rel = torch.stack(pred_traj_rel, 0).permute(0, 2, 1)
     obs_msk = torch.stack(obs_msk, 0)
     pred_msk = torch.stack(pred_msk, 0)
 

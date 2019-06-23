@@ -196,7 +196,8 @@ def train_step(args, batch, predictor, optimizer):
     (obs_traj, pred_traj_gt, obs_traj_rel, pred_traj_gt_rel,
             obs_msk, pred_msk) = batch
 
-    pred_traj_fake, pred_traj_fake_rel = predictor.forward(obs_traj, args.x_max, args.y_max)
+    pred_traj_fake, pred_traj_fake_rel = predictor.forward(obs_traj,
+            args.x_max, args.y_max, pred_traj_gt)
 
     loss = l2_loss(pred_traj_fake_rel, pred_traj_gt_rel, pred_msk, mode='average')
     losses['l2_loss_rel'] = loss.item()
@@ -231,7 +232,8 @@ def check_accuracy(args, loader, predictor, limit=False):
             (obs_traj, pred_traj_gt, obs_traj_rel, pred_traj_gt_rel,
                     obs_msk, pred_msk) = batch
 
-            pred_traj_fake, pred_traj_fake_rel = predictor(obs_traj, args.x_max, args.y_max)
+            pred_traj_fake, pred_traj_fake_rel = predictor(obs_traj,
+                    args.x_max, args.y_max, pred_traj_gt)
 
             #l2_loss_abs, l2_loss_rel = cal_l2_losses(
             #        pred_traj_gt, pred_traj_gt_rel,
