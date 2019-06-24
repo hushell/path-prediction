@@ -12,7 +12,7 @@ import torch.nn as nn
 import torch.optim as optim
 
 from data_loader import data_loader
-from models import *
+from ConvNet import *
 
 
 #########################################################################
@@ -28,8 +28,8 @@ logger = logging.getLogger(__name__)
 parser = argparse.ArgumentParser()
 # Dataset options
 parser.add_argument('--loader_num_workers', default=4, type=int)
-parser.add_argument('--obs_len', default=20, type=int)
-parser.add_argument('--pred_len', default=20, type=int)
+parser.add_argument('--obs_len', default=16, type=int)
+parser.add_argument('--pred_len', default=16, type=int)
 parser.add_argument('--step', default=10, type=int)
 
 # Model Options
@@ -67,14 +67,14 @@ os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu_id
 #########################################################################
 # datasets
 logger.info("Initializing train dataset")
-train_set, train_loader = data_loader(args, 'train', 'Pedestrian')
+train_set, train_loader = data_loader(args, 'train', 'Biker')
 iterations_per_epoch = len(train_set) / args.batch_size
 if args.num_epochs:
     args.num_iterations = int(iterations_per_epoch * args.num_epochs)
 logger.info('There are {} iterations per epoch'.format(iterations_per_epoch))
 
 logger.info("Initializing val dataset")
-val_set, val_loader = data_loader(args, 'val', 'Pedestrian')
+val_set, val_loader = data_loader(args, 'val', 'Biker')
 
 
 #########################################################################
@@ -90,19 +90,13 @@ def main(args, train_loader, val_loader):
                                     encoder_h_dim=args.encoder_h_dim,
                                     decoder_h_dim=args.decoder_h_dim,
                                     num_layers=args.num_layers).to(device)
-    #predictor = TrajectoryLSTM(obs_len=args.obs_len,
-    #                           pred_len=args.pred_len,
-    #                           embedding_dim=args.embedding_dim,
-    #                           h_dim=args.encoder_h_dim,
-    #                           num_layers=args.num_layers).to(device)
-
 
     logger.info('Model structure:')
     logger.info(predictor)
 
     # Optimizier
     optimizer = optim.Adam(predictor.parameters(), lr=args.learning_rate)
-    scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=[10,60], gamma=0.1)
+    scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=[30,60], gamma=0.1)
 
     # Main loop
     t, epoch = 0, 0
@@ -196,13 +190,9 @@ def train_step(args, batch, predictor, optimizer):
     (obs_traj, pred_traj_gt, obs_traj_rel, pred_traj_gt_rel,
             obs_msk, pred_msk) = batch
 
-    pred_traj_fake, pred_traj_fake_rel = predictor.forward(obs_traj,
-            args.x_max, args.y_max, pred_traj_gt)
+    pred_traj_fake, loss = predictor.forward(obs_traj, pred_traj_gt)
 
-    loss = l2_loss(pred_traj_fake_rel, pred_traj_gt_rel, pred_msk, mode='average')
-    losses['l2_loss_rel'] = loss.item()
-    loss = l2_loss(pred_traj_fake, pred_traj_gt, pred_msk, mode='average')
-    losses['l2_loss_abs'] = loss.item()
+    losses['l2_loss'] = loss.item()
     #loss = displacement_error(pred_traj_fake, pred_traj_gt, mode='average')
     #losses['ade-batch'] = loss.item()
 
@@ -232,22 +222,13 @@ def check_accuracy(args, loader, predictor, limit=False):
             (obs_traj, pred_traj_gt, obs_traj_rel, pred_traj_gt_rel,
                     obs_msk, pred_msk) = batch
 
-            pred_traj_fake, pred_traj_fake_rel = predictor(obs_traj,
-                    args.x_max, args.y_max, pred_traj_gt)
-
-            #l2_loss_abs, l2_loss_rel = cal_l2_losses(
-            #        pred_traj_gt, pred_traj_gt_rel,
-            #        pred_traj_fake, pred_traj_fake_rel, pred_msk)
+            pred_traj_fake, loss = predictor(obs_traj, pred_traj_gt)
 
             ade = displacement_error(pred_traj_fake, pred_traj_gt)
-            fde = final_displacement_error(pred_traj_fake[-1], pred_traj_gt[-1])
-            #l2_loss_abs = l2_loss(pred_traj_fake, pred_traj_gt, pred_msk, mode='sum')
-            #l2_loss_rel = l2_loss(pred_traj_fake_rel, pred_traj_gt_rel, pred_msk, mode='sum')
+            fde = final_displacement_error(pred_traj_fake[:,:,-1], pred_traj_gt[:,:,-1])
 
             disp_error.append(ade.item())
             f_disp_error.append(fde.item())
-            #l2_losses_abs.append(l2_loss_abs.item())
-            #l2_losses_rel.append(l2_loss_rel.item())
 
             loss_mask_sum += torch.numel(pred_msk)
             total_traj += pred_traj_gt.size(1)
@@ -258,16 +239,23 @@ def check_accuracy(args, loader, predictor, limit=False):
     # DEBUG
     for ii in range(5):
         print('==> [gt rel x=%.4f y=%.4f] [pred rel x=%.4f y=%.4f]' % (
-            pred_traj_gt[-1,ii,0].item(), pred_traj_gt[-1,ii,1].item(),
-            pred_traj_fake[-1,ii,0].item(), pred_traj_fake[-1,ii,1].item()))
+            pred_traj_gt[ii,0,-1].item(), pred_traj_gt[ii,1,-1].item(),
+            pred_traj_fake[ii,0,-1].item(), pred_traj_fake[ii,1,-1].item()))
 
-    #metrics['l2_loss_abs'] = sum(l2_losses_abs) / loss_mask_sum
-    #metrics['l2_loss_rel'] = sum(l2_losses_rel) / loss_mask_sum
     metrics['ade'] = sum(disp_error) / (total_traj * args.pred_len)
     metrics['fde'] = sum(f_disp_error) / total_traj
 
     predictor.train()
     return metrics
+
+
+def get_dtypes(args):
+    long_dtype = torch.LongTensor
+    float_dtype = torch.FloatTensor
+    if args.use_gpu:
+        long_dtype = torch.cuda.LongTensor
+        float_dtype = torch.cuda.FloatTensor
+    return long_dtype, float_dtype
 
 
 def cal_l2_losses(pred_traj_gt, pred_traj_gt_rel,
