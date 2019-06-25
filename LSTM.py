@@ -105,37 +105,39 @@ class TrajectoryPredictor(nn.Module):
 
         self.apply(init_weights)
 
-    def forward(self, obs_traj, x_max, y_max, pred_traj=None):
+    def forward(self, obs_traj, pred_traj_gt=None):
         """
         Inputs:
         - obs_traj: tensor of shape (obs_len, batch, 2)
+        - pred_traj_gt: tensor of shape (obs_len, batch, 2)
         Output:
         - pred_traj_fake: tensor of shape (pred_len, batch, 2)
+        - loss
         """
         batch = obs_traj.size(1)
-        first_pos = obs_traj[0]
-        last_pos = obs_traj[-1] # batch x 2
-        obj_traj = obj_traj - first_pos.unsqueeze(0)
-
-        #xy_max = torch.FloatTensor([x_max, y_max])
-        #obs_traj  = obs_traj / xy_max
-        #obs_traj = obs_traj - obs_traj.mean(dim=2).unsqueeze(2)
+        obs_traj_nm = obs_traj - obs_traj[:,:,0].unsqueeze(2)
+        last_pos = obs_traj_nm[-1] # batch x 2
 
         ##############################
         # Encode observed trajectory
-        obs_emb = self.spatial_embedding(obs_traj)
+        obs_emb = self.spatial_embedding(obs_traj_nm)
         obs_emb = obs_emb.view(-1, batch, self.embedding_dim)
-
         context = self.encoder(obs_emb)
 
         ##############################
         # Decoding
-        pred_traj_fake, pred_traj_fake_rel = self.decoder(last_pos, context, self.spatial_embedding)
+        pred_traj_fake = self.decoder(last_pos, context, self.spatial_embedding)
 
-        #pred_traj_fake = pred_traj_fake + obs_traj.mean(dim=2).unsqueeze(2)
-        #pred_traj_fake = pred_traj_fake * xy_max
+        ##############################
+        # L2 loss
+        if pred_traj_gt is not None:
+            pred_traj_gt = pred_traj_gt - obs_traj[:,:,-1].unsqueeze(2)
+            loss = l2_loss(pred_traj_gt, pred_traj_nm)
+        else:
+            loss = None
 
-        return pred_traj_fake, pred_traj_fake_rel
+        pred_traj = pred_traj_nm + obs_traj[:,:,-1].unsqueeze(2)
+        return pred_traj_fake, loss
 
     def grad_clipping(self, max_norm=0.25):
         nn.utils.clip_grad_norm_(self.encoder.lstm.parameters(), max_norm)

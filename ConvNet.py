@@ -2,20 +2,22 @@ import torch
 import torch.nn as nn
 
 
-# input: batch_size * nc * isize
-# output: batch_size * k * 1
 class Encoder(nn.Module):
-    def __init__(self, isize, nc, k=100, ndf=64):
+    def __init__(self, isize, nc, k=100, h_dim=64):
+        """
+        Input: tensor of shape (batch_size x nc x isize)
+        Output: tensor of shape (batch_size x k x 1)
+        """
         super(Encoder, self).__init__()
         assert isize % 16 == 0, "isize has to be a multiple of 16"
 
         # input is nc x isize
         main = nn.Sequential()
-        main.add_module('initial_conv_{0}-{1}'.format(nc, ndf),
-                        nn.Conv1d(nc, ndf, 4, 2, 1, bias=False))
-        main.add_module('initial_relu_{0}'.format(ndf),
+        main.add_module('initial_conv_{0}-{1}'.format(nc, h_dim),
+                        nn.Conv1d(nc, h_dim, 4, 2, 1, bias=False))
+        main.add_module('initial_relu_{0}'.format(h_dim),
                         nn.LeakyReLU(0.2, inplace=True))
-        csize, cndf = isize / 2, ndf
+        csize, cndf = isize / 2, h_dim
 
         while csize > 4:
             in_feat = cndf
@@ -40,14 +42,16 @@ class Encoder(nn.Module):
         return output
 
 
-# input: batch_size * k * 1
-# output: batch_size * nc * isize
 class Decoder(nn.Module):
-    def __init__(self, isize, nc, k=100, ngf=64):
+    def __init__(self, isize, nc, k=100, h_dim=64):
+        """
+        Input: tensor of shape (batch_size x k x 1)
+        Output: tensor of shape (batch_size x nc x isize)
+        """
         super(Decoder, self).__init__()
         assert isize % 16 == 0, "isize has to be a multiple of 16"
 
-        cngf, tisize = ngf // 2, 4
+        cngf, tisize = h_dim // 2, 4
         while tisize != isize:
             cngf = cngf * 2
             tisize = tisize * 2
@@ -96,6 +100,14 @@ class TrajectoryPredictor(nn.Module):
         self.decoder = Decoder(pred_len, 2, embedding_dim, decoder_h_dim)
 
     def forward(self, obs_traj, pred_traj_gt=None):
+        """
+        Inputs:
+        - obs_traj: tensor of shape (batch, 2, obs_len)
+        - pred_traj_gt: tensor of shape (batch, 2, pred_len)
+        Output:
+        - pred_traj: tensor of shape (batch, 2, pred_len)
+        - loss: MSE
+        """
         obs_traj_nm = obs_traj - obs_traj[:,:,0].unsqueeze(2)
 
         hidd = self.encoder(obs_traj_nm)
@@ -117,8 +129,8 @@ class TrajectoryPredictor(nn.Module):
 def l2_loss(pred_traj, pred_traj_gt, loss_mask=None, mode='average'):
     """
     Input:
-    - pred_traj: tensor of shape (batch, 2, seq_len). Predicted trajectory.
-    - pred_traj_gt: tensor of shape (batch, 2, seq_len). Groud truth
+    - pred_traj: tensor of shape (batch, 2, seq_len), Predicted trajectory.
+    - pred_traj_gt: tensor of shape (batch, 2, seq_len), Groud truth
     predictions.
     - loss_mask: tensor of shape (batch, 1, seq_len)
     - mode: sum, average or raw
@@ -133,7 +145,6 @@ def l2_loss(pred_traj, pred_traj_gt, loss_mask=None, mode='average'):
     if mode == 'sum':
         return torch.sum(loss)
     elif mode == 'average':
-        #return torch.sum(loss) / torch.numel(loss_mask.data)
         return loss.sum(dim=(1,2)).mean()
     elif mode == 'raw':
         return loss.sum(dim=(1,2))
@@ -142,10 +153,10 @@ def l2_loss(pred_traj, pred_traj_gt, loss_mask=None, mode='average'):
 def displacement_error(pred_traj, pred_traj_gt, consider_ped=None, mode='sum'):
     """
     Input:
-    - pred_traj: Tensor of shape (batch, 2, seq_len). Predicted trajectory.
-    - pred_traj_gt: Tensor of shape (batch, 2, seq_len). Ground truth
+    - pred_traj: tensor of shape (batch, 2, seq_len), Predicted trajectory.
+    - pred_traj_gt: tensor of shape (batch, 2, seq_len), Ground truth
     predictions.
-    - consider_ped: Tensor of shape (batch)
+    - consider_ped: tensor of shape (batch)
     - mode: Can be one of sum, raw
     Output:
     - loss: gives the eculidian displacement error
@@ -168,10 +179,10 @@ def final_displacement_error(
     pred_pos, pred_pos_gt, consider_ped=None, mode='sum'):
     """
     Input:
-    - pred_pos: Tensor of shape (batch, 2). Predicted last pos.
-    - pred_pos_gt: Tensor of shape (seq_len, batch, 2). Groud truth
+    - pred_pos: tensor of shape (batch, 2), Predicted last pos.
+    - pred_pos_gt: tensor of shape (batch, 2), Groud truth
     last pos
-    - consider_ped: Tensor of shape (batch)
+    - consider_ped: tensor of shape (batch)
     Output:
     - loss: gives the eculidian displacement error
     """

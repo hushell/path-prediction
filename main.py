@@ -44,7 +44,7 @@ parser.add_argument('--model_type', default='CNN', type=str)
 # Optimization
 parser.add_argument('--batch_size', default=64, type=int)
 parser.add_argument('--num_iterations', default=10000, type=int)
-parser.add_argument('--num_epochs', default=50, type=int)
+parser.add_argument('--num_epochs', default=40, type=int)
 parser.add_argument('--learning_rate', default=1e-3, type=float)
 parser.add_argument('--grad_max_norm', default=1.0, type=float)
 
@@ -66,6 +66,7 @@ args = parser.parse_args()
 os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu_id
 device = torch.device('cuda:0') if args.use_gpu else torch.device('cpu')
 
+
 #########################################################################
 # Datasets
 
@@ -81,33 +82,29 @@ val_set, val_loader = data_loader(args, 'val', 'Biker')
 
 
 #########################################################################
-# Model
-
-if args.model_type == 'CNN':
-    from ConvNet import TrajectoryPredictor
-elif args.model_type == 'RNN':
-    from LSTM import TrajectoryPredictor
-
-predictor = TrajectoryPredictor(obs_len=args.obs_len,
-                                pred_len=args.pred_len,
-                                embedding_dim=args.embedding_dim,
-                                encoder_h_dim=args.encoder_h_dim,
-                                decoder_h_dim=args.decoder_h_dim,
-                                num_layers=args.num_layers).to(device)
-
-logger.info('Model structure:')
-logger.info(predictor)
-
-
-#########################################################################
 # Main
+if args.model_type == 'CNN':
+    from ConvNet import *
+elif args.model_type == 'RNN':
+    from LSTM import *
 
-def main(args, predictor, train_loader, val_loader):
+def main(args, train_loader, val_loader, device='cpu'):
+    # Model
+    predictor = TrajectoryPredictor(obs_len=args.obs_len,
+                                    pred_len=args.pred_len,
+                                    embedding_dim=args.embedding_dim,
+                                    encoder_h_dim=args.encoder_h_dim,
+                                    decoder_h_dim=args.decoder_h_dim,
+                                    num_layers=args.num_layers).to(device)
+
+    logger.info('Model structure:')
+    logger.info(predictor)
+
     # Optimizier
     optimizer = optim.Adam(predictor.parameters(),
                            lr=args.learning_rate)
     scheduler = optim.lr_scheduler.MultiStepLR(optimizer,
-                                               milestones=[15, 30, 45, 60],
+                                               milestones=[15, 30],
                                                gamma=0.1)
 
     # Restore checkpoint
@@ -149,7 +146,7 @@ def main(args, predictor, train_loader, val_loader):
             tqdm_loader.set_description('Epoch {}, Iter {} / {}, lr {}: losses = {}'.format(
                 epoch, t+1, args.num_iterations, lr, losses))
 
-            # Save logs
+            # Save losses
             if t % args.print_every == 0:
                 logger.info('t = {} / {}'.format(t+1, args.num_iterations))
                 for k, v in sorted(losses.items()):
@@ -161,21 +158,23 @@ def main(args, predictor, train_loader, val_loader):
             if t > 0 and t % args.checkpoint_every == 0:
                 # Check stats on the validation set
                 logger.info('Evaluation on val ...')
-                metrics_val = check_accuracy(args, val_loader, predictor)
+                metrics_val = evaluate(args, val_loader, predictor)
+
                 for k, v in sorted(metrics_val.items()):
                     logger.info('  [val] {}: {:.3f}'.format(k, v))
                     checkpoint['metrics_val'][k].append(v)
 
                 # Check stats on the train set
                 logger.info('Evaluation on train ...')
-                metrics_train = check_accuracy(args, train_loader, predictor, limit=True)
+                metrics_train = evaluate(args, train_loader, predictor, limit=True)
+
                 for k, v in sorted(metrics_train.items()):
                     logger.info('  [train] {}: {:.3f}'.format(k, v))
                     checkpoint['metrics_train'][k].append(v)
 
                 checkpoint['metrics_ts'].append(t)
 
-                # save metrics in log
+                # Save metrics in log
                 logname = os.path.join(args.output_dir, 'log.json')
                 logger.info('Saving log to {}'.format(logname))
                 with open(logname, 'w') as f:
@@ -206,7 +205,7 @@ def main(args, predictor, train_loader, val_loader):
 
 def train_step(args, batch, predictor, optimizer):
     """
-    Inputs: batch, predictor (i.e., model), optimizer
+    Update model with a SGD step
     Outputs:
     - losses
     """
@@ -234,13 +233,12 @@ def train_step(args, batch, predictor, optimizer):
     return losses
 
 
-def check_accuracy(args, loader, predictor, limit=False):
+def evaluate(args, loader, predictor, limit=False):
     """
     """
     predictor.eval()
 
     metrics = {}
-    l2_losses_abs, l2_losses_rel = [], []
     disp_error, f_disp_error = [], []
     total_traj = 0
 
