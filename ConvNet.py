@@ -53,9 +53,12 @@ class Decoder(nn.Module):
             tisize = tisize * 2
 
         main = nn.Sequential()
-        main.add_module('initial_{0}-{1}_convt'.format(k, cngf), nn.ConvTranspose1d(k, cngf, 4, 1, 0, bias=False))
-        main.add_module('initial_{0}_batchnorm'.format(cngf), nn.BatchNorm1d(cngf))
-        main.add_module('initial_{0}_relu'.format(cngf), nn.ReLU(True))
+        main.add_module('initial_{0}-{1}_convt'.format(k, cngf),
+                        nn.ConvTranspose1d(k, cngf, 4, 1, 0, bias=False))
+        main.add_module('initial_{0}_batchnorm'.format(cngf),
+                        nn.BatchNorm1d(cngf))
+        main.add_module('initial_{0}_relu'.format(cngf),
+                        nn.ReLU(True))
 
         csize = 4
         while csize < isize // 2:
@@ -68,8 +71,8 @@ class Decoder(nn.Module):
             cngf = cngf // 2
             csize = csize * 2
 
-        main.add_module('final_{0}-{1}_convt'.format(cngf, nc), nn.ConvTranspose1d(cngf, nc, 4, 2, 1, bias=False))
-        main.add_module('final_{0}_tanh'.format(nc), nn.Tanh())
+        main.add_module('final_{0}-{1}_convt'.format(cngf, nc),
+                        nn.ConvTranspose1d(cngf, nc, 4, 2, 1, bias=False))
 
         self.main = main
         self.main.apply(weights_init)
@@ -93,38 +96,19 @@ class TrajectoryPredictor(nn.Module):
         self.decoder = Decoder(pred_len, 2, embedding_dim, decoder_h_dim)
 
     def forward(self, obs_traj, pred_traj_gt=None):
-        obs_traj_nm, pos_range = self.normalize(obs_traj)
+        obs_traj_nm = obs_traj - obs_traj[:,:,0].unsqueeze(2)
 
         hidd = self.encoder(obs_traj_nm)
         pred_traj_nm = self.decoder(hidd)
 
         if pred_traj_gt is not None:
-            pred_traj_gt, _ = self.normalize(pred_traj_gt, pos_range)
+            pred_traj_gt = pred_traj_gt - obs_traj[:,:,-1].unsqueeze(2)
             loss = l2_loss(pred_traj_gt, pred_traj_nm)
         else:
             loss = None
 
-        pred_traj = self.unnormalize(pred_traj_nm, pos_range)
+        pred_traj = pred_traj_nm + obs_traj[:,:,-1].unsqueeze(2)
         return pred_traj, loss
-
-    def normalize(self, traj, pos_range=None):
-        #traj = traj - traj[:,:,0].unsqueeze(2)
-
-        if pos_range:
-            pos_min, pos_max = pos_range
-        else:
-            pos_min, _ = traj.min(2, keepdim=True)
-            pos_max, _ = traj.max(2, keepdim=True)
-
-        traj_nm = (traj - pos_min) / (pos_max - pos_min + 1e-10) # range = [0,1]
-        traj_nm = traj_nm * 2 - 1 # range = [-1,1]
-        return traj_nm, (pos_min, pos_max)
-
-    def unnormalize(self, traj, pos_range):
-        pos_min, pos_max = pos_range
-        traj = (traj + 1) / 2
-        traj = traj * (pos_max - pos_min) + pos_min
-        return traj
 
     def grad_clipping(self, max_norm=0.25):
         return
